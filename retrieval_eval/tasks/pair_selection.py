@@ -7,6 +7,9 @@ from typing import Any
 import h5py
 import numpy as np
 
+from retrieval_eval.io.poses import load_positions
+from retrieval_eval.methods.sequence_prob import sequence_probabilistic_rank
+
 from .feature_extraction import RetrievalFeatureExtraction
 
 
@@ -42,7 +45,27 @@ class PairSelection:
             "name": "hloc-dir",
             "feature": RetrievalFeatureExtraction.methods["dir"],
         },
+        "seqprob": {
+            "name": "seqprob",
+            "sequence": True,
+        },
+        "seqfg": {
+            "name": "seqfg",
+            "sequence": True,
+        },
     }
+
+    @staticmethod
+    def _resolve_feature(method_name: str, method_cfg: dict[str, Any]) -> dict[str, Any]:
+        if method_name in {"seqprob", "seqfg"}:
+            global_model = str(method_cfg.get("global_model", "megaloc"))
+            if global_model not in RetrievalFeatureExtraction.methods:
+                supported = ", ".join(sorted(RetrievalFeatureExtraction.methods))
+                raise ValueError(
+                    f"Unknown retrieval.global_model={global_model!r}. Supported values: {supported}"
+                )
+            return RetrievalFeatureExtraction.methods[global_model]
+        return PairSelection.methods[method_name]["feature"]
 
     @staticmethod
     def run(
@@ -57,10 +80,10 @@ class PairSelection:
         if method_name not in PairSelection.methods:
             raise ValueError(f"Unknown retrieval method: {method_name}")
 
-        method = deepcopy(PairSelection.methods[method_name])
         method_cfg = deepcopy(config)
         top_k = int(method_cfg.get("top_k", 20))
         overwrite = bool(method_cfg.get("overwrite_features", False))
+        feature_conf = PairSelection._resolve_feature(method_name, method_cfg)
 
         workdir.mkdir(parents=True, exist_ok=True)
         map_h5 = workdir / "map_features.h5"
@@ -70,14 +93,14 @@ class PairSelection:
             image_dir=map_images_dir,
             image_list=map_names,
             feature_path=map_h5,
-            method_conf=method["feature"],
+            method_conf=feature_conf,
             overwrite=overwrite,
         )
         RetrievalFeatureExtraction.extract(
             image_dir=query_images_dir,
             image_list=query_names,
             feature_path=query_h5,
-            method_conf=method["feature"],
+            method_conf=feature_conf,
             overwrite=overwrite,
         )
 
@@ -85,17 +108,36 @@ class PairSelection:
         query_desc = _read_global_descriptors(query_h5, query_names)
         sim = np.matmul(query_desc, map_desc.T)
 
-        k_eff = min(top_k, len(map_names))
-        idx = np.argsort(-sim, axis=1)[:, :k_eff]
+        sequence_meta: dict[str, Any] = {}
+        if method_name in {"seqprob", "seqfg"}:
+            map_root = map_images_dir.parent
+            query_root = query_images_dir.parent
+            map_positions = load_positions(map_root / "poses.txt")
+            query_positions = load_positions(query_root / "poses.txt")
+            ranked, sequence_meta = sequence_probabilistic_rank(
+                sim=sim,
+                map_names=map_names,
+                query_names=query_names,
+                map_positions=map_positions,
+                query_positions=query_positions,
+                query_root=query_root,
+                sequence_cfg=dict(method_cfg.get("sequence", {})),
+                top_k=top_k,
+            )
+        else:
+            k_eff = min(top_k, len(map_names))
+            idx = np.argsort(-sim, axis=1)[:, :k_eff]
 
-        ranked: dict[str, list[tuple[str, float]]] = {}
-        for qi, qname in enumerate(query_names):
-            ranked[qname] = [(map_names[mi], float(sim[qi, mi])) for mi in idx[qi]]
+            ranked = {}
+            for qi, qname in enumerate(query_names):
+                ranked[qname] = [(map_names[mi], float(sim[qi, mi])) for mi in idx[qi]]
 
         retrieval_config = {
             "method": method_name,
-            "feature": method["feature"]["name"],
+            "feature": feature_conf["name"],
             "top_k": top_k,
             "overwrite_features": overwrite,
         }
+        if sequence_meta:
+            retrieval_config["sequence"] = sequence_meta
         return ranked, retrieval_config

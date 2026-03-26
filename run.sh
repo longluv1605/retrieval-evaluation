@@ -12,17 +12,17 @@ set -euo pipefail
 #   MODE=retrieve             : retrieval only
 #   MODE=eval                 : eval-distance only
 
-DATASET_ROOT="${DATASET_ROOT:-datasets}"
+DATASET_ROOT="${DATASET_ROOT:-../datasets}"
 DATASET="${DATASET:-lamar}"
 SCENE="${SCENE:-HGE}"
 MAP_DIR="${MAP_DIR:-map}"
 QUERY_SETS="${QUERY_SETS:-query_val_phone}"
-OUTPUTS_ROOT="${OUTPUTS_ROOT:-outputs}"
+OUTPUTS_ROOT="${OUTPUTS_ROOT:-../outputs}"
 RUN_ID="${RUN_ID:-exp_001}"
-RETRIEVAL_METHOD="${RETRIEVAL_METHOD:-hloc-megaloc}"
+RETRIEVAL_METHOD="${RETRIEVAL_METHOD:-seqprob}"
 THRESHOLD_M="${THRESHOLD_M:-10.0}"
 
-RETRIEVAL_CONFIG="${RETRIEVAL_CONFIG:-configs/retrieval.hloc.yaml}"
+RETRIEVAL_CONFIG="${RETRIEVAL_CONFIG:-configs/retrieval.sequence.yaml}"
 EVAL_CONFIG="${EVAL_CONFIG:-configs/eval.yaml}"
 
 MODE="${MODE:-run}"

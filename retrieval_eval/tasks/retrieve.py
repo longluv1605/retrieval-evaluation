@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from retrieval_eval.config import normalize_retrieval_config
 from retrieval_eval.io.dataset import DatasetLayout, get_map_names, get_query_names
 from retrieval_eval.io.outputs import OutputLayout, ensure_dirs, write_json, write_stage_status
 from retrieval_eval.io.pairs import write_pairs
@@ -48,7 +49,7 @@ def run_retrieve(
     map_names = get_map_names(data_layout)
     query_names = get_query_names(data_layout)
 
-    method_conf = dict(config.get("retrieval", {}))
+    method_conf = normalize_retrieval_config(config)
 
     write_stage_status(
         out_layout.meta_dir / "stage_status.json",

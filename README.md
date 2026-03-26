@@ -1,31 +1,30 @@
 # Retrieval Evaluation
 
-Repo này chuẩn hóa đánh giá retrieval theo hướng:
-- Chạy retrieval trước để tạo `pairs.txt`.
-- Từ `pairs.txt` + pose (nếu có), gán nhãn positive/negative theo ngưỡng khoảng cách `M`.
-- Tính Recall@K và lưu kết quả ra JSON.
+This repository standardizes image retrieval benchmarking with a clear two-stage flow:
+1. Run retrieval and generate `pairs.txt`.
+2. Run distance-based evaluation and generate JSON metrics.
 
-## 1) Phạm vi đánh giá
-- Bài toán: với mỗi ảnh query, retrieve top-K ảnh map.
-- Dữ liệu đầu vào tối thiểu: ảnh map/query + danh sách ảnh.
-- Đánh giá theo khoảng cách vị trí giữa query và ảnh map retrieve được.
-- Nếu distance <= `M` thì pair là positive, ngược lại negative.
+## 1) Evaluation Scope
+- Task: retrieve top-K map images for each query image.
+- Minimal inputs: map/query images and image lists.
+- Distance-based labeling: a pair is positive when distance <= `M`.
 
-## 2) Cấu trúc dataset chuẩn
+## 2) Dataset Layout
 ```text
 datasets/
   my_dataset_scene/
     map/
       images/
-      sfm/                       # optional: pose map có thể đọc từ sfm model
+      sfm/                       # optional map poses from SfM model
       images.txt
-      poses.txt                  # optional nếu đã có sfm
+      poses.txt                  # optional if poses come from sfm/
+      timestamps.txt             # optional, required for sequence timing
     query_day/
       images/
       images.txt
-      query_names.txt            # optional: nếu thiếu thì dùng toàn bộ images.txt
-      timestamps.txt             # optional: timestamp cho seqprob/seqfg
-      poses.txt                  # optional: cần cho evaluation theo distance
+      query_names.txt            # optional; fallback to images.txt
+      timestamps.txt             # optional; fallback timeline if missing
+      poses.txt                  # optional; needed for distance-based eval
       other_sensors_data.txt     # optional
     query_night/
       images/
@@ -35,88 +34,75 @@ datasets/
       poses.txt
 ```
 
-## 3) Quy ước file dữ liệu
+## 3) Data File Conventions
 
-### 3.1 `images.txt` (bắt buộc)
-- Mỗi dòng là một tên ảnh hoặc đường dẫn tương đối so với thư mục `images/`.
-- Không có header.
+### 3.1 `images.txt` (required)
+- One relative image path per line (relative to `images/`).
+- No header.
 
-Ví dụ:
+Example:
 ```text
 frame_000001.jpg
 frame_000002.jpg
 subdir/frame_000003.jpg
 ```
 
-### 3.2 `query_names.txt` (tùy chọn)
-- Mỗi dòng là một query name cần đánh giá.
-- Nếu file này tồn tại, chỉ evaluate các ảnh nằm trong file này.
-- Nếu không tồn tại, evaluate toàn bộ `query_*/images.txt`.
+### 3.2 `query_names.txt` (optional)
+- One query image name per line.
+- If present, evaluation uses only these query names.
+- If missing, evaluation uses all names from `query/images.txt`.
 
-### 3.3 `poses.txt` (tùy chọn nhưng cần cho distance-based eval)
-- Không header.
-- Định dạng mỗi dòng:
+### 3.3 `poses.txt` (optional, required for distance evaluation)
+- No header.
+- Line format:
 `image_name tx ty tz qx qy qz qw`
-- `image_name` phải khớp với tên trong `images.txt`.
-- Đơn vị tọa độ: mét (m), cùng hệ trục giữa map và query.
+- `image_name` must exist in `images.txt`.
+- Position unit is meters in a shared map/query coordinate frame.
 
-Ví dụ:
+Example:
 ```text
 frame_000001.jpg 12.30 5.02 1.44 0.01 0.02 0.03 0.99
 frame_000002.jpg 12.81 5.40 1.46 0.01 0.02 0.04 0.99
 ```
 
-Ghi chú:
-- Với map: có thể lấy pose từ `map/poses.txt` hoặc từ `map/sfm/`.
-- Với query: nếu không có `query_*/poses.txt` thì không thể tính recall-distance chuẩn.
-
-### 3.4 `timestamps.txt` (tùy chọn, dùng cho retrieval theo chuỗi)
-- Dùng cho các method sequence như `seqprob`/`seqfg`.
-- Không header.
-- Mỗi dòng:
+### 3.4 `timestamps.txt` (optional, used by sequence retrieval)
+- Used by `seqprob` and `seqfg`.
+- No header.
+- Line format:
 `image_name timestamp_value`
-- `image_name` phải khớp với tên trong `images.txt`.
-- `timestamp_value` có thể ở `s`, `ms`, `us`, hoặc `ns`.
-- Đơn vị thực tế được khai báo bằng config `retrieval.sequence.timestamp_unit`.
+- `image_name` must exist in `images.txt`.
 
-Ví dụ:
+Example:
 ```text
 frame_000001.jpg 1717392000.12
 frame_000002.jpg 1717392000.46
 frame_000003.jpg 1717392000.81
 ```
 
-Đơn vị timestamp:
-- Sequence retrieval luôn quy đổi về giây để tính `dt`.
-- Với giá trị như `2377234416`, đơn vị phải khai báo tường minh, không đoán tự động.
-- Dùng `retrieval.sequence.timestamp_unit` với một trong các giá trị: `s`, `ms`, `us`, `ns`.
-- Mặc định sử dụng `us` (microseconds), phù hợp với dữ liệu LaMAR/Capture.
+Timestamp unit handling:
+- Sequence retrieval converts timestamps to seconds before computing `dt`.
+- Configure the unit with `retrieval.sequence.timestamp_unit` in:
+  `s | ms | us | ns`
+- Default is `us` (microseconds), matching common LaMAR/Capture data.
 
-Ví dụ convert về giây:
-- `timestamp_unit=s`: `dt_s = dt_raw`
-- `timestamp_unit=ms`: `dt_s = dt_raw / 1e3`
-- `timestamp_unit=us`: `dt_s = dt_raw / 1e6`
-- `timestamp_unit=ns`: `dt_s = dt_raw / 1e9`
+Conversion to seconds:
+- `s`: `dt_s = dt_raw`
+- `ms`: `dt_s = dt_raw / 1e3`
+- `us`: `dt_s = dt_raw / 1e6`
+- `ns`: `dt_s = dt_raw / 1e9`
 
-Fallback khi thiếu timestamp:
-- Nếu không có `timestamps.txt` (hoặc parse timestamp thất bại), pipeline sequence sẽ tạo timestamp giả theo thứ tự ảnh trong `query_names.txt` (hoặc `images.txt` nếu thiếu `query_names.txt`).
-- Khoảng cách thời gian giữa 2 ảnh liên tiếp lấy từ tham số config `retrieval.sequence.dt_s_default`.
-- Giá trị mặc định khuyến nghị: `10.0` giây/ảnh.
+Fallback when timestamps are missing or invalid:
+- Use a uniform timeline with `retrieval.sequence.dt_s_default` seconds per frame.
+- Recommended default: `10.0` seconds per frame.
 
-Ví dụ timestamp giả khi `dt_s_default=10.0`:
-- `t0=0.0`, `t1=10.0`, `t2=20.0`, ...
-
-## 4) Output retrieval: `pairs.txt`
-`pairs.txt` là output chuẩn của bước retrieval cho từng query set.
-
-Định dạng:
-- Không header.
-- Mỗi dòng:
+## 4) Retrieval Output: `pairs.txt`
+- No header.
+- One line per ranked pair:
 `query_name map_name score rank`
-- `rank` bắt đầu từ 1 và tăng liên tục theo từng query.
-- `score` càng cao càng giống (quy ước descending ranking).
+- `rank` starts at 1 per query.
+- `score` is sorted descending.
 
-Ví dụ:
+Example:
 ```text
 frame_q_0001.jpg frame_m_1021.jpg 0.9132 1
 frame_q_0001.jpg frame_m_0908.jpg 0.9011 2
@@ -124,36 +110,33 @@ frame_q_0001.jpg frame_m_1103.jpg 0.8870 3
 frame_q_0002.jpg frame_m_0220.jpg 0.9321 1
 ```
 
-## 5) Protocol evaluation từ `pairs.txt`
+## 5) Evaluation Protocol
 
-### 5.1 Gán nhãn positive/negative
-Cho mỗi pair `(query_name, map_name)`:
-1. Lấy pose query `p_q` từ `query_*/poses.txt`.
-2. Lấy pose map `p_m` từ `map/poses.txt` hoặc `map/sfm/`.
-3. Tính khoảng cách Euclidean:
-`d = ||p_q - p_m||_2`
-4. Gán nhãn:
-- positive nếu `d <= M`
-- negative nếu `d > M`
+### 5.1 Positive/Negative Labeling
+For each pair `(query_name, map_name)`:
+1. Load query pose `p_q` from `query_*/poses.txt`.
+2. Load map pose `p_m` from `map/poses.txt` or `map/sfm/`.
+3. Compute Euclidean distance `d = ||p_q - p_m||_2`.
+4. Label pair:
+   - positive if `d <= M`
+   - negative if `d > M`
 
 ### 5.2 Recall@K
-- Với mỗi query, xét top-K candidates trong `pairs.txt`.
-- Query được tính hit nếu tồn tại ít nhất 1 positive trong top-K.
-- `Recall@K = (#query hit) / (#query được đánh giá)`.
+- A query is a hit if at least one positive pair appears in top-K.
+- `Recall@K = hits / evaluated_queries`.
 
-Ghi chú:
-- Nên báo cáo nhiều mốc K: ví dụ `K = [1, 5, 10, 20]`.
-- Có thể báo cáo thêm distribution khoảng cách cho top-1/top-K.
-
-## 6) Cấu trúc output thống nhất
-Mọi kết quả lưu theo đường dẫn:
+## 6) Standard Output Layout
+All outputs are written to:
 `outputs/<dataset>/<scene>/<query_set>/<retrieval_method>/<run_id>/`
 
-Trong đó:
-- `retrieval_method`: tên phương pháp retrieval (hiện có: `hloc-netvlad`, `hloc-megaloc`, `hloc-dir`).
-- `run_id`: lần chạy cụ thể của cùng method (ví dụ: `exp_001`, `ablation_m5`).
+Supported retrieval methods:
+- `hloc-netvlad`
+- `hloc-megaloc`
+- `hloc-dir`
+- `seqprob`
+- `seqfg`
 
-Ví dụ:
+Example:
 ```text
 outputs/
   my_dataset/my_dataset_scene/query_day/hloc-netvlad/exp_001/
@@ -169,91 +152,34 @@ outputs/
       input_hashes.json
 ```
 
-Ý nghĩa chính:
-- `retrieval/pairs.txt`: ranking thô từ model retrieval.
-- `eval/evaluation.json`: metric tổng để so sánh run.
-- `eval/per_query.jsonl`: kết quả từng query để debug.
-- `eval/pairs_scored.csv`: pair + distance + label để visualize.
-- `meta/stage_status.json`: hỗ trợ resume/skip.
-- `meta/input_hashes.json`: quyết định có cần chạy lại không.
+## 7) Main Artifacts
 
-## 7) Schema `evaluation.json`
-File này là artifact chính để tổng hợp benchmark.
+### 7.1 `evaluation.json`
+Primary benchmark artifact with:
+- dataset/run metadata
+- config metadata
+- recall values
+- distance statistics
+- artifact paths
 
-Ví dụ:
-```json
-{
-  "dataset": "my_dataset",
-  "scene": "my_dataset_scene",
-  "query_set": "query_day",
-  "retrieval_method": "hloc-netvlad",
-  "run_id": "exp_001",
-  "retrieval_config": {
-    "config_path": "configs/retrieval.yaml",
-    "config_hash": "sha256:9d8f...",
-    "checkpoint": "weights/dino_v2_base.pth",
-    "descriptor_dim": 768,
-    "similarity": "cosine",
-    "index_type": "faiss_ivfpq",
-    "top_k": 100
-  },
-  "distance_threshold_m": 5.0,
-  "num_queries_total": 1200,
-  "num_queries_evaluated": 1187,
-  "num_queries_missing_pose": 13,
-  "k_values": [1, 5, 10, 20],
-  "recall": {
-    "R@1": 0.41,
-    "R@5": 0.62,
-    "R@10": 0.70,
-    "R@20": 0.77
-  },
-  "distance_stats_top1": {
-    "mean": 8.31,
-    "median": 4.92,
-    "p90": 18.40
-  },
-  "files": {
-    "pairs": "retrieval/pairs.txt",
-    "per_query": "eval/per_query.jsonl",
-    "pairs_scored": "eval/pairs_scored.csv"
-  }
-}
-```
+### 7.2 `per_query.jsonl`
+Per-query debug records.
 
-## 8) Schema `per_query.jsonl` (để debug và show pairs)
-Mỗi dòng là 1 query:
-```json
-{"query_name":"frame_q_0001.jpg","evaluated":true,"best_rank_positive":2,"hit_at":{"1":false,"5":true,"10":true},"top1_distance_m":6.7}
-{"query_name":"frame_q_0002.jpg","evaluated":false,"reason":"missing_query_pose"}
-```
+### 7.3 `pairs_scored.csv`
+Scored pair table with distance and binary label.
 
-## 9) Schema `pairs_scored.csv` (để visualize)
-- Có header.
-- Cột đề xuất:
-`query_name,map_name,score,rank,distance_m,is_positive,within_topk`
+## 8) Resume/Skip Behavior
+- Stages support resume/skip based on input hashes.
+- If relevant inputs change, the stage is recomputed.
+- Stage metadata is stored in `meta/stage_status.json`.
 
-Ví dụ:
-```csv
-query_name,map_name,score,rank,distance_m,is_positive,within_topk
-frame_q_0001.jpg,frame_m_1021.jpg,0.9132,1,6.70,0,1
-frame_q_0001.jpg,frame_m_0908.jpg,0.9011,2,3.91,1,1
-```
+## 9) Sequence Retrieval Config
+Use a retrieval config that contains `retrieval.sequence`.
 
-## 10) Resume/skip khi chạy lại
-Mỗi stage (`retrieve`, `eval`) cần hỗ trợ `--resume` hoặc `--skip-existing`:
-- Nếu output stage tồn tại và `input_hashes.json` không đổi, stage được skip.
-- Nếu thay đổi model/config/data threshold `M`, stage tương ứng phải chạy lại.
-- `stage_status.json` lưu: trạng thái, thời gian, input hash, output hash, lỗi (nếu có).
-
-## 10.1) Config cho sequence retrieval (chuẩn bị cho `seqprob/seqfg`)
-Khi dùng method sequence, thêm block `retrieval.sequence` trong file retrieval config.
-
-Ví dụ tối thiểu:
+Example:
 ```yaml
 retrieval:
   global_model: megaloc
-  resize_max: 640
   top_k: 10
   overwrite_features: false
   sequence:
@@ -268,36 +194,22 @@ retrieval:
     dt_s_default: 10.0
 ```
 
-Quy tắc dùng timestamp:
-  - Nếu `query_*/timestamps.txt` tồn tại: dùng timestamp thật theo đúng đơn vị `timestamp_unit`.
-  - Nếu thiếu `timestamps.txt`: dùng timestamp giả với bước `dt_s_default`.
+Rules:
+- If `query_*/timestamps.txt` exists, real timestamps are used.
+- If missing/invalid, a uniform fallback timeline is used.
 
-## 11) Các trường hợp không evaluate được
-- Thiếu pose query hoặc pose map cho query/pair tương ứng.
-- Pair tham chiếu tới ảnh không có trong `images.txt`.
-- Hệ tọa độ map/query không đồng nhất.
-
-Trong các trường hợp này:
-- Không làm hỏng run toàn cục.
-- Ghi rõ số lượng và lý do vào `evaluation.json` + `per_query.jsonl`.
-
-## 12) Cài môi trường (đơn giản, không cần cài editable repo này)
+## 10) Environment Setup
 ```bash
 cd src/retrieval-evaluation
 python3 -m pip install -r requirements.txt
 
-# Cài HLOC giống cách LaMAR dùng
 git clone --recursive -b v1.4 https://github.com/cvg/Hierarchical-Localization.git hloc --depth=1
 python3 -m pip install -e ./hloc
 ```
 
-Ghi chú:
-- Bạn có thể chạy trực tiếp bằng `python3 -m retrieval_eval.cli ...`.
-- Không bắt buộc `pip install -e .` cho repo `retrieval-evaluation`.
-
-## 13) CLI workflow tối thiểu
+## 11) Minimal CLI Workflow
 ```bash
-# 1) Chạy retrieval, sinh pairs.txt
+# 1) Retrieval
 python3 -m retrieval_eval.cli retrieve \
   --config configs/retrieval.hloc.yaml \
   --dataset-root datasets \
@@ -308,7 +220,7 @@ python3 -m retrieval_eval.cli retrieve \
   --retrieval-method hloc-netvlad \
   --run-id exp_001
 
-# 2) Evaluate theo ngưỡng M, sinh evaluation.json
+# 2) Distance evaluation
 python3 -m retrieval_eval.cli eval-distance \
   --config configs/eval.yaml \
   --dataset-root datasets \
@@ -320,7 +232,7 @@ python3 -m retrieval_eval.cli eval-distance \
   --run-id exp_001 \
   --threshold-m 5.0
 
-# 3) Chạy 1 lệnh cả retrieval + eval
+# 3) Full pipeline
 python3 -m retrieval_eval.cli run \
   --retrieval-config configs/retrieval.hloc.yaml \
   --eval-config configs/eval.yaml \
@@ -334,30 +246,10 @@ python3 -m retrieval_eval.cli run \
   --threshold-m 5.0
 ```
 
-### Chạy nhanh bằng `run.sh` (style LaMAR)
-```bash
-cd src/retrieval-evaluation
-chmod +x run.sh
-
-# Mặc định chạy MODE=run cho QUERY_SETS="query_day"
-./run.sh
-
-# Ví dụ đổi method + nhiều query set
-RETRIEVAL_METHOD=hloc-megaloc \
-QUERY_SETS="query_day query_night" \
-RUN_ID=exp_megaloc_001 \
-THRESHOLD_M=5.0 \
-./run.sh
-
-# Chỉ chạy retrieval hoặc chỉ chạy eval
-MODE=retrieve ./run.sh
-MODE=eval ./run.sh
-```
-
-## 14) Definition of Done
-Một run hợp lệ khi:
-- Có `retrieval/pairs.txt` đúng format.
-- Có `eval/evaluation.json` parse được và có Recall@K.
-- Có `eval/per_query.jsonl` để truy vết query fail/hit.
-- Có `eval/pairs_scored.csv` để show pair và kiểm chứng trực quan.
-- Có `meta/manifest.yaml` + `meta/stage_status.json` để tái lập run.
+## 12) Done Criteria
+A run is valid when:
+- `retrieval/pairs.txt` exists with correct format.
+- `eval/evaluation.json` is valid and contains Recall@K.
+- `eval/per_query.jsonl` exists for per-query debugging.
+- `eval/pairs_scored.csv` exists for analysis.
+- `meta/stage_status.json` exists for reproducibility.

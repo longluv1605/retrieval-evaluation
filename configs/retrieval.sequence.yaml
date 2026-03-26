@@ -1,0 +1,40 @@
+retrieval:
+  # Global descriptor backbone used by seqprob/seqfg.
+  # Supported: netvlad | megaloc | dir
+  global_model: megaloc
+
+  # Number of map candidates written to pairs.txt per query (top-K output).
+  top_k: 10
+
+  # Recompute descriptors even when feature files already exist.
+  overwrite_features: false
+
+  sequence:
+    # Number of map candidates per frame before sequence smoothing.
+    num_candidates: 50
+
+    # Temperature for unary logits (smaller -> sharper, more confident).
+    tau: 0.07
+
+    # Maximum expected speed (m/s) for transition constraints.
+    v_max: 3.0
+
+    # Epsilon to avoid divide-by-zero and stabilize transitions.
+    eps: 0.25
+
+    # Weight of query motion prior in [0, 1].
+    # If query poses are missing, the pipeline degrades gracefully.
+    lambda_dist: 1.0
+
+    # Gaussian width for motion-distance mismatch.
+    sigma_d: 1.0
+
+    # Upper bound for delta-time between consecutive frames (seconds).
+    max_dt_s: 30.0
+
+    # Timestamp unit in query/timestamps.txt: s | ms | us | ns.
+    # Default for LaMAR/Capture is usually us.
+    timestamp_unit: us
+
+    # Fallback when timestamps.txt is missing/invalid: uniform timeline with dt_s_default seconds per frame.
+    dt_s_default: 10.0
