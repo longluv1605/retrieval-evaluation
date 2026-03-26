@@ -205,6 +205,30 @@ def _write_poses(path: Path, rows: list[tuple[str, Pose]]) -> None:
             )
 
 
+def _build_image_timestamp_map(images: dict[Key, str]) -> dict[str, str]:
+    """Map each image path to its raw timestamp token from LaMAR images.txt.
+
+    If an image path appears multiple times (multi-sensor edge cases),
+    keep the first occurrence to preserve deterministic behavior.
+    """
+    out: dict[str, str] = {}
+    for (timestamp, _sensor_id), image_path in images.items():
+        out.setdefault(image_path, timestamp)
+    return out
+
+
+def _build_timestamp_rows(image_names: list[str], image_to_timestamp: dict[str, str]) -> tuple[list[str], int]:
+    rows: list[str] = []
+    missing = 0
+    for image_name in image_names:
+        ts = image_to_timestamp.get(image_name)
+        if ts is None:
+            missing += 1
+            continue
+        rows.append(f"{image_name} {ts}")
+    return rows, missing
+
+
 def convert_scene(
     lamar_scene_root: Path,
     output_scene_root: Path,
@@ -236,6 +260,7 @@ def convert_scene(
     map_dst = output_scene_root / map_session
     map_images = _read_images_txt(map_src / "images.txt")
     map_traj = _read_trajectories(map_src / "trajectories.txt")
+    map_image_to_timestamp = _build_image_timestamp_map(map_images)
 
     map_image_paths = list(map_images.values())
     map_materialized: list[str] = []
@@ -265,12 +290,19 @@ def convert_scene(
 
     _write_lines(map_dst / "images.txt", map_materialized)
     _write_poses(map_dst / "poses.txt", map_pose_rows)
+    map_timestamp_rows, missing_map_timestamps = _build_timestamp_rows(
+        map_materialized,
+        map_image_to_timestamp,
+    )
+    _write_lines(map_dst / "timestamps.txt", map_timestamp_rows)
 
     summary["map"] = {
         "num_images": len(map_image_paths),
         "num_images_kept": len(map_materialized),
         "num_poses": len(map_pose_rows),
         "num_images_materialized": map_linked,
+        "num_timestamps": len(map_timestamp_rows),
+        "missing_timestamps": missing_map_timestamps,
     }
 
     # Convert query sessions
@@ -281,6 +313,7 @@ def convert_scene(
         query_dst = output_scene_root / query_set_name
 
         images = _read_images_txt(query_src / "images.txt")
+        image_to_timestamp = _build_image_timestamp_map(images)
         traj_default = _read_trajectories(query_src / "trajectories.txt")
         traj_aligned = _read_trajectories(query_src / "proc" / "alignment_trajectories.txt")
         query_traj = traj_aligned if (use_alignment_poses_for_query and traj_aligned) else traj_default
@@ -345,6 +378,11 @@ def convert_scene(
         _write_lines(query_dst / "images.txt", materialized_images)
         _write_lines(query_dst / "query_names.txt", filtered_query_names)
         _write_poses(query_dst / "poses.txt", filtered_pose_rows)
+        timestamp_rows, missing_timestamps = _build_timestamp_rows(
+            materialized_images,
+            image_to_timestamp,
+        )
+        _write_lines(query_dst / "timestamps.txt", timestamp_rows)
 
         copied_sensor_files = _copy_other_sensors_data(query_src, query_dst)
 
@@ -354,8 +392,10 @@ def convert_scene(
             "num_queries_selected": len(dedup_query_images),
             "num_queries_kept": len(filtered_query_names),
             "num_query_poses": len(filtered_pose_rows),
+            "num_timestamps": len(timestamp_rows),
             "missing_query_images": missing_query_images,
             "missing_query_poses": missing_query_poses,
+            "missing_timestamps": missing_timestamps,
             "num_images_materialized": query_linked,
             "pose_source": "alignment_trajectories"
             if (use_alignment_poses_for_query and traj_aligned)

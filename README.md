@@ -24,12 +24,14 @@ datasets/
       images/
       images.txt
       query_names.txt            # optional: nếu thiếu thì dùng toàn bộ images.txt
+      timestamps.txt             # optional: timestamp cho seqprob/seqfg
       poses.txt                  # optional: cần cho evaluation theo distance
       other_sensors_data.txt     # optional
     query_night/
       images/
       images.txt
       query_names.txt
+      timestamps.txt
       poses.txt
 ```
 
@@ -67,6 +69,42 @@ frame_000002.jpg 12.81 5.40 1.46 0.01 0.02 0.04 0.99
 Ghi chú:
 - Với map: có thể lấy pose từ `map/poses.txt` hoặc từ `map/sfm/`.
 - Với query: nếu không có `query_*/poses.txt` thì không thể tính recall-distance chuẩn.
+
+### 3.4 `timestamps.txt` (tùy chọn, dùng cho retrieval theo chuỗi)
+- Dùng cho các method sequence như `seqprob`/`seqfg`.
+- Không header.
+- Mỗi dòng:
+`image_name timestamp_value`
+- `image_name` phải khớp với tên trong `images.txt`.
+- `timestamp_value` có thể ở `s`, `ms`, `us`, hoặc `ns`.
+- Đơn vị thực tế được khai báo bằng config `retrieval.sequence.timestamp_unit`.
+
+Ví dụ:
+```text
+frame_000001.jpg 1717392000.12
+frame_000002.jpg 1717392000.46
+frame_000003.jpg 1717392000.81
+```
+
+Đơn vị timestamp:
+- Sequence retrieval luôn quy đổi về giây để tính `dt`.
+- Với giá trị như `2377234416`, đơn vị phải khai báo tường minh, không đoán tự động.
+- Dùng `retrieval.sequence.timestamp_unit` với một trong các giá trị: `s`, `ms`, `us`, `ns`.
+- Mặc định sử dụng `us` (microseconds), phù hợp với dữ liệu LaMAR/Capture.
+
+Ví dụ convert về giây:
+- `timestamp_unit=s`: `dt_s = dt_raw`
+- `timestamp_unit=ms`: `dt_s = dt_raw / 1e3`
+- `timestamp_unit=us`: `dt_s = dt_raw / 1e6`
+- `timestamp_unit=ns`: `dt_s = dt_raw / 1e9`
+
+Fallback khi thiếu timestamp:
+- Nếu không có `timestamps.txt` (hoặc parse timestamp thất bại), pipeline sequence sẽ tạo timestamp giả theo thứ tự ảnh trong `query_names.txt` (hoặc `images.txt` nếu thiếu `query_names.txt`).
+- Khoảng cách thời gian giữa 2 ảnh liên tiếp lấy từ tham số config `retrieval.sequence.dt_s_default`.
+- Giá trị mặc định khuyến nghị: `10.0` giây/ảnh.
+
+Ví dụ timestamp giả khi `dt_s_default=10.0`:
+- `t0=0.0`, `t1=10.0`, `t2=20.0`, ...
 
 ## 4) Output retrieval: `pairs.txt`
 `pairs.txt` là output chuẩn của bước retrieval cho từng query set.
@@ -207,6 +245,32 @@ Mỗi stage (`retrieve`, `eval`) cần hỗ trợ `--resume` hoặc `--skip-exis
 - Nếu output stage tồn tại và `input_hashes.json` không đổi, stage được skip.
 - Nếu thay đổi model/config/data threshold `M`, stage tương ứng phải chạy lại.
 - `stage_status.json` lưu: trạng thái, thời gian, input hash, output hash, lỗi (nếu có).
+
+## 10.1) Config cho sequence retrieval (chuẩn bị cho `seqprob/seqfg`)
+Khi dùng method sequence, thêm block `retrieval.sequence` trong file retrieval config.
+
+Ví dụ tối thiểu:
+```yaml
+retrieval:
+  global_model: megaloc
+  resize_max: 640
+  top_k: 10
+  overwrite_features: false
+  sequence:
+    num_candidates: 50
+    tau: 0.07
+    v_max: 3.0
+    eps: 0.25
+    lambda_dist: 1.0
+    sigma_d: 1.0
+    max_dt_s: 30.0
+    timestamp_unit: us
+    dt_s_default: 10.0
+```
+
+Quy tắc dùng timestamp:
+  - Nếu `query_*/timestamps.txt` tồn tại: dùng timestamp thật theo đúng đơn vị `timestamp_unit`.
+  - Nếu thiếu `timestamps.txt`: dùng timestamp giả với bước `dt_s_default`.
 
 ## 11) Các trường hợp không evaluate được
 - Thiếu pose query hoặc pose map cho query/pair tương ứng.
