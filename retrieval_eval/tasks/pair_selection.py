@@ -113,6 +113,17 @@ class PairSelection:
             map_root = map_images_dir.parent
             query_root = query_images_dir.parent
             map_positions = load_positions(map_root / "poses.txt")
+            if not map_positions:
+                raise FileNotFoundError(
+                    f"Sequence method requires map poses, but none were loaded from: {map_root / 'poses.txt'}"
+                )
+            missing_map_pose = [name for name in map_names if name not in map_positions]
+            if missing_map_pose:
+                preview = ", ".join(missing_map_pose[:5])
+                raise ValueError(
+                    "Sequence method requires map poses for all map images. "
+                    f"Missing {len(missing_map_pose)} poses (examples: {preview})"
+                )
             query_positions = load_positions(query_root / "poses.txt")
             ranked, sequence_meta = sequence_probabilistic_rank(
                 sim=sim,
