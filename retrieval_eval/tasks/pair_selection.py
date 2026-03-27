@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from collections import OrderedDict
+import json
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +70,97 @@ class PairSelection:
         return PairSelection.methods[method_name]["feature"]
 
     @staticmethod
+    def _build_sequence_groups(
+        query_root: Path,
+        query_names: list[str],
+        sequence_cfg: dict[str, Any],
+    ) -> tuple[OrderedDict[str, list[int]], dict[str, Any]]:
+        sequence_file = str(sequence_cfg.get("sequence_file", "query_sequences.txt"))
+        path = query_root / sequence_file
+
+        if not path.exists():
+            return OrderedDict({"__all__": list(range(len(query_names)))}), {
+                "grouping_source": "single_global_group",
+                "grouping_file": sequence_file,
+                "num_sequences": 1,
+                "num_unannotated": 0,
+            }
+
+        by_name: dict[str, str] = {}
+        parse_errors = 0
+
+        if path.suffix.lower() == ".json":
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSON in sequence grouping file: {path}") from exc
+
+            if isinstance(payload, list):
+                # Supported JSON format: list of lists, each inner list is one sequence.
+                for seq_idx, seq_images in enumerate(payload):
+                    if not isinstance(seq_images, list):
+                        parse_errors += 1
+                        continue
+                    sid = f"seq_{seq_idx:06d}"
+                    for name in seq_images:
+                        if not isinstance(name, str):
+                            parse_errors += 1
+                            continue
+                        by_name[name] = sid
+            elif isinstance(payload, dict):
+                # Also support mapping sequence_id -> list[image_name].
+                for sid, seq_images in payload.items():
+                    if not isinstance(sid, str) or not isinstance(seq_images, list):
+                        parse_errors += 1
+                        continue
+                    for name in seq_images:
+                        if not isinstance(name, str):
+                            parse_errors += 1
+                            continue
+                        by_name[name] = sid
+            else:
+                raise ValueError(
+                    f"Unsupported JSON sequence grouping format in {path}. "
+                    "Expected list[list[str]] or dict[str, list[str]]."
+                )
+        else:
+            with path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    ln = line.strip()
+                    if not ln or ln.startswith("#"):
+                        continue
+                    parts = ln.split()
+                    if len(parts) < 2:
+                        parse_errors += 1
+                        continue
+                    by_name[parts[0]] = parts[1]
+
+        if not by_name:
+            raise ValueError(
+                f"Sequence grouping file exists but has no valid entries: {path}. "
+                "Expected .txt format: 'image_name sequence_id' or JSON list/dict format."
+            )
+
+        groups: OrderedDict[str, list[int]] = OrderedDict()
+        unannotated = 0
+        for idx, qname in enumerate(query_names):
+            sid = by_name.get(qname)
+            if sid is None:
+                sid = f"__single__{idx:08d}"
+                unannotated += 1
+            groups.setdefault(sid, []).append(idx)
+
+        return groups, {
+            "grouping_source": "query_sequences_file",
+            "grouping_file": sequence_file,
+            "grouping_parse_errors": parse_errors,
+            "num_sequences": len(groups),
+            "num_annotated": len(query_names) - unannotated,
+            "num_unannotated": unannotated,
+            "unannotated_policy": "singleton_sequence",
+        }
+
+    @staticmethod
     def run(
         map_images_dir: Path,
         query_images_dir: Path,
@@ -125,16 +218,44 @@ class PairSelection:
                     f"Missing {len(missing_map_pose)} poses (examples: {preview})"
                 )
             query_positions = load_positions(query_root / "poses.txt")
-            ranked, sequence_meta = sequence_probabilistic_rank(
-                sim=sim,
-                map_names=map_names,
-                query_names=query_names,
-                map_positions=map_positions,
-                query_positions=query_positions,
+            sequence_cfg = dict(method_cfg.get("sequence", {}))
+            groups, grouping_meta = PairSelection._build_sequence_groups(
                 query_root=query_root,
-                sequence_cfg=dict(method_cfg.get("sequence", {})),
-                top_k=top_k,
+                query_names=query_names,
+                sequence_cfg=sequence_cfg,
             )
+
+            ranked = {}
+            sequence_summaries: list[dict[str, Any]] = []
+            for sid, idxs in groups.items():
+                idx_arr = np.array(idxs, dtype=np.int64)
+                qnames_seq = [query_names[i] for i in idxs]
+                ranked_seq, meta_seq = sequence_probabilistic_rank(
+                    sim=sim[idx_arr, :],
+                    map_names=map_names,
+                    query_names=qnames_seq,
+                    map_positions=map_positions,
+                    query_positions=query_positions,
+                    query_root=query_root,
+                    sequence_cfg=sequence_cfg,
+                    top_k=top_k,
+                )
+                for qname in qnames_seq:
+                    ranked[qname] = ranked_seq[qname]
+
+                sequence_summaries.append(
+                    {
+                        "sequence_id": sid,
+                        "num_queries": len(qnames_seq),
+                        "timestamp_source": meta_seq.get("timestamp_source", "unknown"),
+                    }
+                )
+
+            sequence_meta = {
+                **grouping_meta,
+                "num_sequences_effective": len(groups),
+                "sequence_summaries": sequence_summaries,
+            }
         else:
             k_eff = min(top_k, len(map_names))
             idx = np.argsort(-sim, axis=1)[:, :k_eff]

@@ -10,6 +10,12 @@ retrieval:
   overwrite_features: false
 
   sequence:
+    # Optional sequence annotation file under query root.
+    # Supported formats:
+    # - .txt: image_name sequence_id
+    # - .json: list of lists (each inner list is one sequence)
+    sequence_file: query_sequences.json
+
     # Number of map candidates per frame before sequence smoothing.
     num_candidates: 50
 

@@ -7,6 +7,7 @@ import yaml
 
 
 SEQUENCE_DEFAULTS: dict[str, Any] = {
+    "sequence_file": "query_sequences.txt",
     "num_candidates": 50,
     "tau": 0.07,
     "v_max": 3.0,

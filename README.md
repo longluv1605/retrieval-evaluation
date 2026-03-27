@@ -24,6 +24,7 @@ datasets/
       images.txt
       query_names.txt            # optional; fallback to images.txt
       timestamps.txt             # optional; fallback timeline if missing
+      query_sequences.json       # optional; sequence groups for sequence methods
       poses.txt                  # optional; needed for distance-based eval
       other_sensors_data.txt     # optional
     query_night/
@@ -94,6 +95,30 @@ Conversion to seconds:
 Fallback when timestamps are missing or invalid:
 - Use a uniform timeline with `retrieval.sequence.dt_s_default` seconds per frame.
 - Recommended default: `10.0` seconds per frame.
+
+### 3.5 `query_sequences` annotation (optional, used by sequence retrieval)
+- Used only by `seqprob` and `seqfg`.
+- Supported file formats:
+  - `query_sequences.txt`: each line is `image_name sequence_id`
+  - `query_sequences.json`: sequence groups as lists
+- If present, sequence optimization is run independently per group.
+- If a query image is not annotated, it is processed as a singleton sequence.
+- If the file is missing, all query images are treated as one global sequence.
+
+JSON example (no manual sequence names needed):
+```json
+[
+  ["frame_000001.jpg", "frame_000002.jpg", "frame_000003.jpg"],
+  ["frame_000101.jpg", "frame_000102.jpg"]
+]
+```
+
+TXT example:
+```text
+frame_000001.jpg seq_a
+frame_000002.jpg seq_a
+frame_000003.jpg seq_b
+```
 
 ## 4) Retrieval Output: `pairs.txt`
 - No header.
@@ -183,6 +208,7 @@ retrieval:
   top_k: 10
   overwrite_features: false
   sequence:
+    sequence_file: query_sequences.json
     num_candidates: 50
     tau: 0.07
     v_max: 3.0
@@ -197,6 +223,8 @@ retrieval:
 Rules:
 - If `query_*/timestamps.txt` exists, real timestamps are used.
 - If missing/invalid, a uniform fallback timeline is used.
+- If `query_*/query_sequences.txt` or `query_*/query_sequences.json` exists, optimization runs per sequence group.
+- Unannotated query images are processed as singleton sequences.
 
 ## 10) Environment Setup
 ```bash
@@ -205,6 +233,39 @@ python3 -m pip install -r requirements.txt
 
 git clone --recursive -b v1.4 https://github.com/cvg/Hierarchical-Localization.git hloc --depth=1
 python3 -m pip install -e ./hloc
+
+# Optional for the Tkinter annotation app
+python3 -m pip install pillow
+```
+
+## 10.1) Sequence Annotation App (Tkinter)
+You can annotate query sequences interactively and export `query_sequences.json`.
+
+Script:
+- `tools/annotate_sequences_tk.py`
+
+Features:
+- Shows query images in timestamp order.
+- Displays timestamp in raw value and human-readable UTC.
+- `Add To Sequence`: add current image to active sequence and advance.
+- `Save And Create Seq`: save active sequence and start a new one.
+- Supports continue annotation: if output JSON already exists, annotated images are skipped.
+
+Run:
+```bash
+python3 tools/annotate_sequences_tk.py \
+  --query-root datasets/<dataset>/<scene>/<query_set> \
+  --output-json datasets/<dataset>/<scene>/<query_set>/query_sequences.json \
+  --timestamp-unit us \
+  --dt-s-default 10.0
+```
+
+Output JSON format (`list of lists`):
+```json
+[
+  ["frame_000001.jpg", "frame_000002.jpg", "frame_000003.jpg"],
+  ["frame_000101.jpg", "frame_000102.jpg"]
+]
 ```
 
 ## 11) Minimal CLI Workflow

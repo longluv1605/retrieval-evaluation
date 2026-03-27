@@ -229,6 +229,221 @@ def _build_timestamp_rows(image_names: list[str], image_to_timestamp: dict[str, 
     return rows, missing
 
 
+def _parse_subsession_line(line: str) -> str | None:
+    text = line.strip()
+    if not text:
+        return None
+    if text.startswith("#") or text.startswith("//") or text.startswith(";"):
+        return None
+
+    if "," in text:
+        parts = [p.strip() for p in text.split(",") if p.strip()]
+    else:
+        parts = [p.strip() for p in text.split() if p.strip()]
+
+    if not parts:
+        return None
+
+    if parts[0].lower() in {"subsession", "subsession_id", "session_id"}:
+        return None
+    return parts[0]
+
+
+def _read_subsession_ids(path: Path) -> tuple[list[str], dict[str, int | bool]]:
+    stats: dict[str, int | bool] = {
+        "exists": path.exists(),
+        "rows_total": 0,
+        "rows_valid": 0,
+        "parse_errors": 0,
+    }
+    if not path.exists():
+        return [], stats
+
+    out: list[str] = []
+    seen: set[str] = set()
+    with path.open("r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#") or line.startswith("//") or line.startswith(";"):
+                continue
+
+            stats["rows_total"] = int(stats["rows_total"]) + 1
+            token = _parse_subsession_line(raw)
+            if token is None:
+                continue
+
+            stats["rows_valid"] = int(stats["rows_valid"]) + 1
+            if token in seen:
+                continue
+            seen.add(token)
+            out.append(token)
+
+    stats["parse_errors"] = int(stats["rows_total"]) - int(stats["rows_valid"])
+    return out, stats
+
+
+def _extract_subsession_from_image_name(image_name: str) -> str | None:
+    parts = Path(image_name).parts
+    if not parts:
+        return None
+    return parts[0]
+
+
+def _build_subsession_alias_map(subsession_ids: list[str]) -> dict[str, str]:
+    alias: dict[str, str] = {}
+    for sid in subsession_ids:
+        alias.setdefault(sid, sid)
+        for variant in _normalize_session_token(sid):
+            alias.setdefault(variant, sid)
+    return alias
+
+
+def _resolve_subsession_id(token: str | None, alias: dict[str, str]) -> str | None:
+    if token is None:
+        return None
+    if token in alias:
+        return alias[token]
+    for variant in _normalize_session_token(token):
+        if variant in alias:
+            return alias[variant]
+    return None
+
+
+def _chunk_image_names(image_names: list[str], chunk_size: int) -> list[list[str]]:
+    if chunk_size <= 0:
+        raise ValueError(f"chunk_size must be > 0, got {chunk_size}")
+    return [image_names[i : i + chunk_size] for i in range(0, len(image_names), chunk_size)]
+
+
+def _timestamp_sort_key(
+    image_name: str,
+    image_to_timestamp: dict[str, str],
+    order_index: dict[str, int],
+) -> tuple[int, float, str, int]:
+    ts = image_to_timestamp.get(image_name)
+    if ts is None:
+        return (2, 0.0, "", order_index[image_name])
+    try:
+        return (0, float(ts), "", order_index[image_name])
+    except ValueError:
+        return (1, 0.0, ts, order_index[image_name])
+
+
+def _build_query_sequences_from_subsessions(
+    query_names: list[str],
+    image_to_timestamp: dict[str, str],
+    subsession_ids: list[str],
+    chunk_size: int,
+    strict_cover: bool,
+    fallback_policy: str,
+) -> tuple[list[list[str]], dict[str, int | float | str]]:
+    if fallback_policy not in {"global_chunk", "singleton"}:
+        raise ValueError(
+            f"Unsupported fallback_policy='{fallback_policy}'. Expected one of: global_chunk, singleton"
+        )
+
+    dedup_query_names = list(dict.fromkeys(query_names))
+    order_index = {name: i for i, name in enumerate(dedup_query_names)}
+
+    sequences: list[list[str]] = []
+    stats: dict[str, int | float | str] = {
+        "num_query_names": len(query_names),
+        "num_unique_query_names": len(dedup_query_names),
+        "num_subsessions_declared": len(subsession_ids),
+        "num_subsessions_used": 0,
+        "num_assigned": 0,
+        "num_unassigned": 0,
+        "num_sequences": 0,
+        "sequence_len_min": 0,
+        "sequence_len_max": 0,
+        "sequence_len_mean": 0.0,
+        "coverage_ratio": 0.0,
+        "fallback_reason": "",
+    }
+
+    if not dedup_query_names:
+        return sequences, stats
+
+    alias = _build_subsession_alias_map(subsession_ids)
+    grouped: dict[str, list[str]] = {sid: [] for sid in subsession_ids}
+    unassigned: list[str] = []
+
+    for image_name in dedup_query_names:
+        token = _extract_subsession_from_image_name(image_name)
+        sid = _resolve_subsession_id(token, alias)
+        if sid is None:
+            unassigned.append(image_name)
+        else:
+            grouped.setdefault(sid, []).append(image_name)
+
+    for sid in subsession_ids:
+        group_images = grouped.get(sid, [])
+        if not group_images:
+            continue
+        group_sorted = sorted(
+            group_images,
+            key=lambda name: _timestamp_sort_key(name, image_to_timestamp, order_index),
+        )
+        chunks = _chunk_image_names(group_sorted, chunk_size)
+        sequences.extend(chunks)
+        stats["num_subsessions_used"] = int(stats["num_subsessions_used"]) + 1
+
+    if unassigned:
+        stats["num_unassigned"] = len(unassigned)
+        if strict_cover:
+            sample = ", ".join(unassigned[:5])
+            raise ValueError(
+                "Strict cover failed: found unassigned query images while building query sequences. "
+                f"count={len(unassigned)}, sample={sample}"
+            )
+
+        stats["fallback_reason"] = "unassigned_query_images"
+        if fallback_policy == "singleton":
+            sequences.extend([[name] for name in unassigned])
+        else:
+            unassigned_sorted = sorted(
+                unassigned,
+                key=lambda name: _timestamp_sort_key(name, image_to_timestamp, order_index),
+            )
+            sequences.extend(_chunk_image_names(unassigned_sorted, chunk_size))
+    elif not subsession_ids:
+        stats["fallback_reason"] = "missing_subsessions"
+        if fallback_policy == "singleton":
+            sequences = [[name] for name in dedup_query_names]
+        else:
+            sorted_names = sorted(
+                dedup_query_names,
+                key=lambda name: _timestamp_sort_key(name, image_to_timestamp, order_index),
+            )
+            sequences = _chunk_image_names(sorted_names, chunk_size)
+
+    flattened = [name for seq in sequences for name in seq]
+    num_assigned = len(flattened)
+    stats["num_assigned"] = num_assigned
+    stats["num_sequences"] = len(sequences)
+    if sequences:
+        lengths = [len(seq) for seq in sequences]
+        stats["sequence_len_min"] = min(lengths)
+        stats["sequence_len_max"] = max(lengths)
+        stats["sequence_len_mean"] = float(sum(lengths)) / float(len(lengths))
+
+    if dedup_query_names:
+        stats["coverage_ratio"] = float(num_assigned) / float(len(dedup_query_names))
+
+    if strict_cover and num_assigned != len(dedup_query_names):
+        raise ValueError(
+            "Strict cover failed: query sequence annotation does not cover all query names exactly once. "
+            f"assigned={num_assigned}, total={len(dedup_query_names)}"
+        )
+
+    return sequences, stats
+
+
+def _write_query_sequences_json(path: Path, sequences: list[list[str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(sequences, indent=2, ensure_ascii=True), encoding="utf-8")
+
+
 def convert_scene(
     lamar_scene_root: Path,
     output_scene_root: Path,
@@ -237,6 +452,12 @@ def convert_scene(
     sensor_priority: list[str],
     use_alignment_poses_for_query: bool,
     copy_images: bool,
+    auto_query_sequences: bool,
+    query_sequence_chunk_size: int,
+    query_sequence_file: str,
+    query_sequence_strict_cover: bool,
+    subsessions_file: str,
+    subsessions_fallback: str,
 ) -> dict[str, object]:
     sessions_root = lamar_scene_root / "sessions"
 
@@ -384,6 +605,46 @@ def convert_scene(
         )
         _write_lines(query_dst / "timestamps.txt", timestamp_rows)
 
+        sequence_annotation: dict[str, object] = {
+            "enabled": bool(auto_query_sequences),
+            "file": query_sequence_file,
+            "chunk_size": query_sequence_chunk_size,
+            "strict_cover": bool(query_sequence_strict_cover),
+            "fallback_policy": subsessions_fallback,
+        }
+        if auto_query_sequences:
+            subsessions_path = query_src / subsessions_file
+            subsession_ids, subsession_stats = _read_subsession_ids(subsessions_path)
+            sequences, sequence_stats = _build_query_sequences_from_subsessions(
+                query_names=filtered_query_names,
+                image_to_timestamp=image_to_timestamp,
+                subsession_ids=subsession_ids,
+                chunk_size=query_sequence_chunk_size,
+                strict_cover=query_sequence_strict_cover,
+                fallback_policy=subsessions_fallback,
+            )
+            _write_query_sequences_json(query_dst / query_sequence_file, sequences)
+
+            sequence_annotation.update(
+                {
+                    "subsessions_file": subsessions_file,
+                    "subsessions_file_exists": bool(subsession_stats["exists"]),
+                    "subsessions_rows_total": int(subsession_stats["rows_total"]),
+                    "subsessions_rows_valid": int(subsession_stats["rows_valid"]),
+                    "subsessions_parse_errors": int(subsession_stats["parse_errors"]),
+                    "num_sequences": int(sequence_stats["num_sequences"]),
+                    "num_assigned": int(sequence_stats["num_assigned"]),
+                    "num_unassigned": int(sequence_stats["num_unassigned"]),
+                    "coverage_ratio": float(sequence_stats["coverage_ratio"]),
+                    "sequence_len_min": int(sequence_stats["sequence_len_min"]),
+                    "sequence_len_max": int(sequence_stats["sequence_len_max"]),
+                    "sequence_len_mean": float(sequence_stats["sequence_len_mean"]),
+                    "fallback_reason": str(sequence_stats["fallback_reason"]),
+                    "num_subsessions_declared": int(sequence_stats["num_subsessions_declared"]),
+                    "num_subsessions_used": int(sequence_stats["num_subsessions_used"]),
+                }
+            )
+
         copied_sensor_files = _copy_other_sensors_data(query_src, query_dst)
 
         query_sets_out[query_set_name] = {
@@ -401,6 +662,7 @@ def convert_scene(
             if (use_alignment_poses_for_query and traj_aligned)
             else "trajectories",
             "copied_sensor_files": copied_sensor_files,
+            "sequence_annotation": sequence_annotation,
         }
 
     summary["query_sets"] = query_sets_out
@@ -431,8 +693,52 @@ def main() -> None:
     )
     parser.add_argument("--use-alignment-poses-for-query", action="store_true")
     parser.add_argument("--copy-images", action="store_true")
+    parser.add_argument(
+        "--auto-query-sequences",
+        action="store_true",
+        default=True,
+        help="Automatically create query_sequences.json for each query set from subsessions.",
+    )
+    parser.add_argument(
+        "--no-auto-query-sequences",
+        action="store_false",
+        dest="auto_query_sequences",
+        help="Disable automatic query sequence annotation generation.",
+    )
+    parser.add_argument(
+        "--query-sequence-chunk-size",
+        type=int,
+        default=10,
+        help="Split each subsession into chunks of this many images.",
+    )
+    parser.add_argument(
+        "--query-sequence-file",
+        type=str,
+        default="query_sequences.json",
+        help="Output file name for generated query sequence annotations per query set.",
+    )
+    parser.add_argument(
+        "--query-sequence-strict-cover",
+        action="store_true",
+        help="Fail conversion if generated query sequences do not cover all query names exactly once.",
+    )
+    parser.add_argument(
+        "--subsessions-file",
+        type=str,
+        default="proc/subsessions.txt",
+        help="Relative path inside each query session to the subsessions annotation file.",
+    )
+    parser.add_argument(
+        "--subsessions-fallback",
+        choices=["global_chunk", "singleton"],
+        default="global_chunk",
+        help="Fallback behavior when subsession mapping is missing/partial.",
+    )
 
     args = parser.parse_args()
+
+    if args.query_sequence_chunk_size <= 0:
+        raise ValueError(f"--query-sequence-chunk-size must be > 0, got {args.query_sequence_chunk_size}")
 
     summary = convert_scene(
         lamar_scene_root=args.lamar_scene_root,
@@ -442,6 +748,12 @@ def main() -> None:
         sensor_priority=list(args.sensor_priority),
         use_alignment_poses_for_query=bool(args.use_alignment_poses_for_query),
         copy_images=bool(args.copy_images),
+        auto_query_sequences=bool(args.auto_query_sequences),
+        query_sequence_chunk_size=int(args.query_sequence_chunk_size),
+        query_sequence_file=str(args.query_sequence_file),
+        query_sequence_strict_cover=bool(args.query_sequence_strict_cover),
+        subsessions_file=str(args.subsessions_file),
+        subsessions_fallback=str(args.subsessions_fallback),
     )
 
     summary_path = args.output_scene_root / "conversion_summary.json"
