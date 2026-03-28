@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from copy import deepcopy
 from collections import OrderedDict
 import json
@@ -29,6 +30,21 @@ def _read_global_descriptors(feature_h5: Path, names: list[str]) -> np.ndarray:
     arr = np.stack(desc, axis=0)
     arr = arr / np.clip(np.linalg.norm(arr, axis=1, keepdims=True), a_min=1e-8, a_max=None)
     return arr
+
+
+def _feature_cache_path(
+    *,
+    feature_cache_dir: Path,
+    session_name: str,
+    feature_conf: dict[str, Any],
+) -> Path:
+    payload = {
+        "feature": feature_conf,
+    }
+    dumped = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    digest = hashlib.sha256(dumped).hexdigest()[:16]
+    feature_name = str(feature_conf.get("name", "global")).replace("/", "_")
+    return feature_cache_dir / session_name / f"{feature_name}_{digest}.h5"
 
 
 class PairSelection:
@@ -169,6 +185,7 @@ class PairSelection:
         workdir: Path,
         method_name: str,
         config: dict[str, Any],
+        feature_cache_dir: Path | None = None,
     ) -> tuple[dict[str, list[tuple[str, float]]], dict[str, Any]]:
         if method_name not in PairSelection.methods:
             raise ValueError(f"Unknown retrieval method: {method_name}")
@@ -179,23 +196,47 @@ class PairSelection:
         feature_conf = PairSelection._resolve_feature(method_name, method_cfg)
 
         workdir.mkdir(parents=True, exist_ok=True)
-        map_h5 = workdir / "map_features.h5"
-        query_h5 = workdir / "query_features.h5"
+        cache_enabled = feature_cache_dir is not None
+        if cache_enabled:
+            assert feature_cache_dir is not None
+            map_session = map_images_dir.parent.name
+            query_session = query_images_dir.parent.name
+            map_h5 = _feature_cache_path(
+                feature_cache_dir=feature_cache_dir,
+                session_name=map_session,
+                feature_conf=feature_conf,
+            )
+            query_h5 = _feature_cache_path(
+                feature_cache_dir=feature_cache_dir,
+                session_name=query_session,
+                feature_conf=feature_conf,
+            )
+            map_h5.parent.mkdir(parents=True, exist_ok=True)
+            query_h5.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            map_h5 = workdir / "map_features.h5"
+            query_h5 = workdir / "query_features.h5"
 
-        RetrievalFeatureExtraction.extract(
-            image_dir=map_images_dir,
-            image_list=map_names,
-            feature_path=map_h5,
-            method_conf=feature_conf,
-            overwrite=overwrite,
-        )
-        RetrievalFeatureExtraction.extract(
-            image_dir=query_images_dir,
-            image_list=query_names,
-            feature_path=query_h5,
-            method_conf=feature_conf,
-            overwrite=overwrite,
-        )
+        map_cache_hit = map_h5.exists() and not overwrite
+        query_cache_hit = query_h5.exists() and not overwrite
+
+        if not map_cache_hit:
+            RetrievalFeatureExtraction.extract(
+                image_dir=map_images_dir,
+                image_list=map_names,
+                feature_path=map_h5,
+                method_conf=feature_conf,
+                overwrite=overwrite,
+            )
+
+        if not query_cache_hit:
+            RetrievalFeatureExtraction.extract(
+                image_dir=query_images_dir,
+                image_list=query_names,
+                feature_path=query_h5,
+                method_conf=feature_conf,
+                overwrite=overwrite,
+            )
 
         map_desc = _read_global_descriptors(map_h5, map_names)
         query_desc = _read_global_descriptors(query_h5, query_names)
@@ -269,6 +310,14 @@ class PairSelection:
             "feature": feature_conf["name"],
             "top_k": top_k,
             "overwrite_features": overwrite,
+            "feature_cache": {
+                "enabled": cache_enabled,
+                "dir": str(feature_cache_dir) if feature_cache_dir is not None else None,
+                "map_h5": str(map_h5),
+                "query_h5": str(query_h5),
+                "map_cache_hit": map_cache_hit,
+                "query_cache_hit": query_cache_hit,
+            },
         }
         if sequence_meta:
             retrieval_config["sequence"] = sequence_meta

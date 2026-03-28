@@ -50,6 +50,7 @@ def run_retrieve(
     query_names = get_query_names(data_layout)
 
     method_conf = normalize_retrieval_config(config)
+    feature_cache_dir = outputs_root / "_feature_cache" / dataset_name / scene
 
     write_stage_status(
         out_layout.meta_dir / "stage_status.json",
@@ -66,6 +67,7 @@ def run_retrieve(
         workdir=out_layout.retrieval_dir,
         method_name=retrieval_method,
         config=method_conf,
+        feature_cache_dir=feature_cache_dir,
     )
 
     pairs_path = out_layout.retrieval_dir / "pairs.txt"
