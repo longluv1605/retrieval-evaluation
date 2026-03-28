@@ -127,7 +127,6 @@ def _resolve_image_source(session_src: Path, image_path: str) -> Path | None:
     shared_images_root = session_src / "raw_data"
     p = Path(image_path)
 
-    # Fast path: as-is under scene/images.
     c0 = shared_images_root / p
     if c0.exists():
         return c0
@@ -447,7 +446,7 @@ def _write_query_sequences_json(path: Path, sequences: list[list[str]]) -> None:
 def convert_scene(
     lamar_scene_root: Path,
     output_scene_root: Path,
-    map_session: str,
+    map_sessions: list[str],
     query_sessions: list[str],
     sensor_priority: list[str],
     use_alignment_poses_for_query: bool,
@@ -463,68 +462,69 @@ def convert_scene(
 
     if not sessions_root.exists():
         raise FileNotFoundError(f"Missing sessions root: {sessions_root}")
-    if not (lamar_scene_root / "images").exists():
-        raise FileNotFoundError(f"Missing shared images root: {lamar_scene_root / 'images'}")
 
     missing_source_counter: Counter[str] = Counter()
 
     summary: dict[str, object] = {
         "lamar_scene_root": str(lamar_scene_root),
         "output_scene_root": str(output_scene_root),
-        "map_session": map_session,
+        "map_sessions": map_sessions,
         "query_sessions": query_sessions,
         "query_sets": {},
     }
 
     # Convert map
-    map_src = sessions_root / map_session
-    map_dst = output_scene_root / map_session
-    map_images = _read_images_txt(map_src / "images.txt")
-    map_traj = _read_trajectories(map_src / "trajectories.txt")
-    map_image_to_timestamp = _build_image_timestamp_map(map_images)
+    map_sets_out: dict[str, object] = {}
+    for map_session in map_sessions:
+        map_src = sessions_root / map_session
+        map_dst = output_scene_root / map_session
+        map_images = _read_images_txt(map_src / "images.txt")
+        map_traj = _read_trajectories(map_src / "trajectories.txt")
+        map_image_to_timestamp = _build_image_timestamp_map(map_images)
 
-    map_image_paths = list(map_images.values())
-    map_materialized: list[str] = []
-    map_linked = 0
-    for image_path in map_image_paths:
-        src = _resolve_image_source(map_src, image_path)
-        if src is None:
-            missing_source_counter["map"] += 1
-            continue
-        _safe_link_or_copy(src, map_dst / "images" / image_path, copy_images)
-        map_linked += 1
-        map_materialized.append(image_path)
+        map_image_paths = list(map_images.values())
+        map_materialized: list[str] = []
+        map_linked = 0
+        for image_path in map_image_paths:
+            src = _resolve_image_source(map_src, image_path)
+            if src is None:
+                missing_source_counter[map_session] += 1
+                continue
+            _safe_link_or_copy(src, map_dst / "images" / image_path, copy_images)
+            map_linked += 1
+            map_materialized.append(image_path)
 
-    map_materialized_set = set(map_materialized)
+        map_materialized_set = set(map_materialized)
 
-    map_pose_rows: list[tuple[str, Pose]] = []
-    for key, image_path in map_images.items():
-        if image_path not in map_materialized_set:
-            continue
-        if key in map_traj:
-            map_pose_rows.append((image_path, map_traj[key]))
-        else:
-            ts = key[0]
-            candidates = [pose for (t, _d), pose in map_traj.items() if t == ts]
-            if candidates:
-                map_pose_rows.append((image_path, candidates[0]))
+        map_pose_rows: list[tuple[str, Pose]] = []
+        for key, image_path in map_images.items():
+            if image_path not in map_materialized_set:
+                continue
+            if key in map_traj:
+                map_pose_rows.append((image_path, map_traj[key]))
+            else:
+                ts = key[0]
+                candidates = [pose for (t, _d), pose in map_traj.items() if t == ts]
+                if candidates:
+                    map_pose_rows.append((image_path, candidates[0]))
 
-    _write_lines(map_dst / "images.txt", map_materialized)
-    _write_poses(map_dst / "poses.txt", map_pose_rows)
-    map_timestamp_rows, missing_map_timestamps = _build_timestamp_rows(
-        map_materialized,
-        map_image_to_timestamp,
-    )
-    _write_lines(map_dst / "timestamps.txt", map_timestamp_rows)
+        _write_lines(map_dst / "images.txt", map_materialized)
+        _write_poses(map_dst / "poses.txt", map_pose_rows)
+        map_timestamp_rows, missing_map_timestamps = _build_timestamp_rows(
+            map_materialized,
+            map_image_to_timestamp,
+        )
+        _write_lines(map_dst / "timestamps.txt", map_timestamp_rows)
 
-    summary["map"] = {
-        "num_images": len(map_image_paths),
-        "num_images_kept": len(map_materialized),
-        "num_poses": len(map_pose_rows),
-        "num_images_materialized": map_linked,
-        "num_timestamps": len(map_timestamp_rows),
-        "missing_timestamps": missing_map_timestamps,
-    }
+        map_sets_out[map_session] = {
+            "num_images": len(map_image_paths),
+            "num_images_kept": len(map_materialized),
+            "num_poses": len(map_pose_rows),
+            "num_images_materialized": map_linked,
+            "num_timestamps": len(map_timestamp_rows),
+            "missing_timestamps": missing_map_timestamps,
+        }
+    summary["map_sets"] = map_sets_out
 
     # Convert query sessions
     query_sets_out: dict[str, object] = {}
@@ -674,12 +674,12 @@ def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(
-        prog="convert-lamar-kapture",
+        prog="convert-lamar",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--lamar-scene-root", type=Path, required=True)
     parser.add_argument("--output-scene-root", type=Path, required=True)
-    parser.add_argument("--map-session", type=str, default="map")
+    parser.add_argument("--map-sessions", nargs="+", required=True)
     parser.add_argument(
         "--query-sessions",
         nargs="+",
@@ -743,7 +743,7 @@ def main() -> None:
     summary = convert_scene(
         lamar_scene_root=args.lamar_scene_root,
         output_scene_root=args.output_scene_root,
-        map_session=args.map_session,
+        map_sessions=list(args.map_sessions),
         query_sessions=list(args.query_sessions),
         sensor_priority=list(args.sensor_priority),
         use_alignment_poses_for_query=bool(args.use_alignment_poses_for_query),
