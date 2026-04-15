@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import shutil
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
@@ -165,6 +167,79 @@ def _read_cam0_cam1_extrinsic(calib_yaml: Path) -> tuple[np.ndarray, np.ndarray]
 
 def _timestamp_key(name: str) -> float:
     return float(Path(name).stem)
+
+
+def _timestamp_us_from_name(name: str) -> int:
+    """Parse Hilti image timestamp from filename stem and return integer microseconds.
+
+    Hilti extracted images are named like "10005.123456.jpg" (seconds, fractional).
+    We standardize to microseconds integer to match retrieval-evaluation defaults.
+    """
+    stem = Path(name).stem
+    try:
+        ts_s = Decimal(stem)
+    except InvalidOperation:
+        # Fallback: be permissive if the stem isn't a strict decimal token.
+        ts_s = Decimal(str(float(stem)))
+    ts_us = (ts_s * Decimal("1000000")).to_integral_value(rounding=ROUND_HALF_UP)
+    return int(ts_us)
+
+
+def _stable_u64(text: str) -> int:
+    d = hashlib.md5(text.encode("utf-8")).digest()
+    return int.from_bytes(d[:8], byteorder="big", signed=False)
+
+
+def _sample_map_names_per_run(
+    run_name: str,
+    names: list[str],
+    *,
+    sample_dt_s: float,
+    max_per_run: int,
+) -> list[str]:
+    if not names:
+        return []
+
+    max_per_run = int(max_per_run)
+    dt_us = int(round(float(sample_dt_s) * 1_000_000.0))
+
+    names_sorted = sorted(names, key=_timestamp_key)
+
+    if dt_us <= 0:
+        picked = list(names_sorted)
+    else:
+        offset_us = int(_stable_u64(run_name) % dt_us)
+        ts0 = _timestamp_us_from_name(names_sorted[0])
+        if ts0 <= offset_us:
+            k0 = 0
+        else:
+            k0 = (ts0 - offset_us + dt_us - 1) // dt_us
+        next_ts = offset_us + k0 * dt_us
+
+        picked: list[str] = []
+        for n in names_sorted:
+            ts = _timestamp_us_from_name(n)
+            if ts >= next_ts:
+                picked.append(n)
+                next_ts += dt_us
+
+        if not picked:
+            picked = [names_sorted[0]]
+
+    if max_per_run > 0 and len(picked) > max_per_run:
+        stride = int(math.ceil(len(picked) / float(max_per_run)))
+        stride = max(1, stride)
+        offset = int(_stable_u64(f"{run_name}|cap") % stride)
+        capped = picked[offset::stride]
+        if not capped:
+            capped = picked[0::stride]
+        if len(capped) > max_per_run:
+            capped = capped[:max_per_run]
+        picked = capped
+
+    if not picked:
+        picked = [names_sorted[0]]
+    return picked
 
 
 def _write_lines(path: Path, rows: list[str]) -> None:
@@ -354,16 +429,16 @@ def _collect_scene_runs(extracted_data_root: Path, scene: str) -> list[str]:
     return runs
 
 
-def _sample_queries_for_equirect(
+def _sample_queries_per_run(
     frames_by_run: dict[str, list[str]],
     *,
     seq_len: int,
     stride: int,
     min_sequences: int,
     low_resource_threshold: int,
+    window_stride: int,
 ) -> tuple[list[str], list[list[str]], dict[str, Any]]:
-    seq_len = max(1, seq_len)
-    stride = max(1, stride)
+    stride = max(1, int(stride))
 
     total_frames = sum(len(v) for v in frames_by_run.values())
     fallback_mode = "normal"
@@ -371,6 +446,10 @@ def _sample_queries_for_equirect(
         fallback_mode = "low-resource-b"
         seq_len = 1
         stride = 1
+        window_stride = 1
+
+    seq_len = int(seq_len)
+    window_stride = int(window_stride)
 
     sampled_by_run: dict[str, list[str]] = {}
     for run_name, names in frames_by_run.items():
@@ -384,15 +463,28 @@ def _sample_queries_for_equirect(
 
     queries = sorted({x for rows in sampled_by_run.values() for x in rows})
     sequences: list[list[str]] = []
-    seq_window_stride = max(1, seq_len // 2)
+
+    if seq_len <= 0:
+        # Full per-run sequences (backward-compatible for single-camera).
+        for run_name in sorted(sampled_by_run):
+            rows = sampled_by_run[run_name]
+            if rows:
+                sequences.append(rows)
+        effective_window_stride: int | None = None
+    else:
+        effective_window_stride = max(1, window_stride) if window_stride > 0 else max(1, seq_len // 2)
+
     for run_name in sorted(sampled_by_run):
         rows = sampled_by_run[run_name]
         if not rows:
             continue
+        if seq_len <= 0:
+            # Already emitted above.
+            continue
         if len(rows) <= seq_len:
             sequences.append(rows)
             continue
-        for i in range(0, len(rows) - seq_len + 1, seq_window_stride):
+        for i in range(0, len(rows) - seq_len + 1, effective_window_stride):
             sequences.append(rows[i : i + seq_len])
 
     if len(sequences) < min_sequences and fallback_mode == "normal":
@@ -405,7 +497,96 @@ def _sample_queries_for_equirect(
         "sequence_count": len(sequences),
         "seq_len": seq_len,
         "stride": stride,
+        "window_stride": effective_window_stride,
         "min_sequences_target": min_sequences,
+    }
+    return queries, sequences, sampling_manifest
+
+
+def _sample_queries_per_run_time(
+    frames_by_run: dict[str, list[str]],
+    timestamps_us_by_name: dict[str, int],
+    *,
+    sample_dt_s: float,
+    seq_duration_s: float,
+    min_sequences: int,
+    low_resource_threshold: int,
+) -> tuple[list[str], list[list[str]], dict[str, Any]]:
+    sample_dt_us = max(0, int(round(float(sample_dt_s) * 1_000_000.0)))
+    seq_duration_us = max(0, int(round(float(seq_duration_s) * 1_000_000.0)))
+
+    total_frames = sum(len(v) for v in frames_by_run.values())
+    fallback_mode = "normal"
+    if total_frames < low_resource_threshold:
+        fallback_mode = "low-resource-b"
+        sample_dt_us = 0
+        seq_duration_us = 0
+
+    sampled_by_run: dict[str, list[str]] = {}
+    for run_name, names in frames_by_run.items():
+        if not names:
+            sampled_by_run[run_name] = []
+            continue
+
+        names_sorted = sorted(names, key=lambda n: timestamps_us_by_name.get(n, 0))
+
+        picked: list[str] = []
+        last_ts: int | None = None
+        for n in names_sorted:
+            ts = timestamps_us_by_name.get(n)
+            if ts is None:
+                continue
+            if last_ts is None or sample_dt_us == 0 or ts - last_ts >= sample_dt_us:
+                picked.append(n)
+                last_ts = ts
+        if not picked:
+            picked = [names_sorted[0]]
+        sampled_by_run[run_name] = picked
+
+    queries = sorted({x for rows in sampled_by_run.values() for x in rows})
+    sequences: list[list[str]] = []
+
+    for run_name in sorted(sampled_by_run):
+        rows = sampled_by_run[run_name]
+        if not rows:
+            continue
+
+        if seq_duration_us <= 0:
+            sequences.append(rows)
+            continue
+
+        cur_seq: list[str] = []
+        t0: int | None = None
+        for n in rows:
+            ts = timestamps_us_by_name.get(n)
+            if ts is None:
+                continue
+            if t0 is None:
+                t0 = ts
+                cur_seq = [n]
+                continue
+            if ts - t0 <= seq_duration_us:
+                cur_seq.append(n)
+            else:
+                if cur_seq:
+                    sequences.append(cur_seq)
+                t0 = ts
+                cur_seq = [n]
+        if cur_seq:
+            sequences.append(cur_seq)
+
+    if len(sequences) < min_sequences and fallback_mode == "normal":
+        fallback_mode = "low-resource-a"
+
+    sampling_manifest = {
+        "mode": fallback_mode,
+        "strategy": "time",
+        "total_frames": total_frames,
+        "query_count": len(queries),
+        "sequence_count": len(sequences),
+        "sample_dt_s": float(sample_dt_s),
+        "seq_duration_s": float(seq_duration_s),
+        "min_sequences_target": int(min_sequences),
     }
     return queries, sequences, sampling_manifest
 
@@ -420,12 +601,20 @@ def _export_scene(
     scene_runs: list[str],
     min_timestamp: float,
     single_pose_policy: str,
+    clean_output: bool,
     t_cam0_cam1: np.ndarray,
     r_cam0_cam1: np.ndarray,
     copy_images: bool,
     stitch_maps: dict | None,
     jpeg_quality: int,
     max_frames: int,
+    single_seq_mode: str,
+    single_sample_dt_s: float,
+    single_seq_duration_s: float,
+    single_seq_len: int,
+    single_stride: int,
+    single_min_sequences: int,
+    single_seq_window_stride: int,
     eq_seq_len: int,
     eq_stride: int,
     eq_min_sequences: int,
@@ -434,8 +623,14 @@ def _export_scene(
     rotate_cam1_180: bool,
     blend_mode: str,
     roll_px: int,
+    map_sample_dt_s: float,
+    map_max_per_run: int,
 ) -> dict:
     scene_root = dataset_root / output_dataset_name / scene
+
+    if clean_output and scene_root.exists():
+        shutil.rmtree(scene_root)
+
     map_images_root = scene_root / "map" / "images"
     query_set_name = "query_cam1" if dataset_type == "single" else "query"
     query_images_root = scene_root / query_set_name / "images"
@@ -451,6 +646,8 @@ def _export_scene(
     query_written = 0
     max_per_partition = max_frames if max_frames > 0 else 10**18
     eq_candidates_by_run: dict[str, list[str]] = {}
+    query_candidates_by_run: dict[str, list[str]] = {}
+    query_ts_us_by_name: dict[str, int] = {}
 
     for run_name in sorted(scene_runs):
         run_root = extracted_data_root / run_name
@@ -466,13 +663,24 @@ def _export_scene(
         ]
         common_names.sort(key=_timestamp_key)
 
-        for name in common_names:
+        map_names = _sample_map_names_per_run(
+            run_name,
+            common_names,
+            sample_dt_s=map_sample_dt_s,
+            max_per_run=map_max_per_run,
+        )
+        if (map_sample_dt_s and map_sample_dt_s > 0.0) or (map_max_per_run and map_max_per_run > 0):
+            print(
+                f"[map-sampling] run={run_name} raw={len(common_names)} sampled={len(map_names)} dt_s={float(map_sample_dt_s):g} cap={int(map_max_per_run)}"
+            )
+
+        for name in map_names:
             rel = f"{run_name}/{name}" if dataset_type == "single" else f"{run_name}/{Path(name).stem}_eq.jpg"
             dst = map_images_root / rel
             pose = _resolve_pose(Path(name).stem, poses_exact, poses_rounded6)
             if pose is None:
                 continue
-            ts = _timestamp_key(name)
+            ts_us = _timestamp_us_from_name(name)
 
             if dataset_type == "single":
                 _safe_link_or_copy(cam0_dir / name, dst, copy_images)
@@ -492,7 +700,7 @@ def _export_scene(
 
             map_lines.append(rel)
             map_poses.append((rel, pose))
-            map_ts_lines.append(f"{rel} {ts:.6f}")
+            map_ts_lines.append(f"{rel} {ts_us}")
             map_written += 1
             if map_written >= max_per_partition:
                 break
@@ -507,27 +715,31 @@ def _export_scene(
                 base_pose = _resolve_pose(Path(name).stem, poses_exact, poses_rounded6)
                 if base_pose is None:
                     continue
-                ts = _timestamp_key(name)
+                ts_us = _timestamp_us_from_name(name)
                 _safe_link_or_copy(cam1_dir / name, dst, copy_images)
                 pose = base_pose if single_pose_policy == "v1" else _apply_cam0_to_cam1(base_pose, t_cam0_cam1, r_cam0_cam1)
 
                 query_lines.append(rel)
                 query_poses.append((rel, pose))
-                query_ts_lines.append(f"{rel} {ts:.6f}")
+                query_ts_lines.append(f"{rel} {ts_us}")
+                query_ts_us_by_name[rel] = int(ts_us)
+                query_candidates_by_run.setdefault(run_name, []).append(rel)
                 query_written += 1
                 if query_written >= max_per_partition:
                     break
 
     map_lines = sorted(dict.fromkeys(map_lines))
     sampling_manifest: dict[str, Any] | None = None
+    sequences: list[list[str]] = []
 
     if dataset_type == "equirect":
-        sampled_queries, sequences, sampling_manifest = _sample_queries_for_equirect(
+        sampled_queries, sequences, sampling_manifest = _sample_queries_per_run(
             eq_candidates_by_run,
             seq_len=eq_seq_len,
             stride=eq_stride,
             min_sequences=eq_min_sequences,
             low_resource_threshold=low_resource_threshold,
+            window_stride=max(1, eq_seq_len // 2),
         )
         query_lines = sampled_queries
         map_pose_dict = {k: v for k, v in map_poses}
@@ -535,7 +747,29 @@ def _export_scene(
         query_poses = [(k, map_pose_dict[k]) for k in query_lines if k in map_pose_dict]
         query_ts_lines = [map_ts_dict[k] for k in query_lines if k in map_ts_dict]
     else:
-        query_lines = sorted(dict.fromkeys(query_lines))
+        if single_seq_mode == "time":
+            sampled_queries, sequences, sampling_manifest = _sample_queries_per_run_time(
+                query_candidates_by_run,
+                query_ts_us_by_name,
+                sample_dt_s=single_sample_dt_s,
+                seq_duration_s=single_seq_duration_s,
+                min_sequences=single_min_sequences,
+                low_resource_threshold=low_resource_threshold,
+            )
+        else:
+            sampled_queries, sequences, sampling_manifest = _sample_queries_per_run(
+                query_candidates_by_run,
+                seq_len=single_seq_len,
+                stride=single_stride,
+                min_sequences=single_min_sequences,
+                low_resource_threshold=low_resource_threshold,
+                window_stride=single_seq_window_stride,
+            )
+        query_lines = sampled_queries
+        query_pose_dict_all = {k: v for k, v in query_poses}
+        query_ts_dict_all = {r.split(" ", 1)[0]: r for r in query_ts_lines}
+        query_poses = [(k, query_pose_dict_all[k]) for k in query_lines if k in query_pose_dict_all]
+        query_ts_lines = [query_ts_dict_all[k] for k in query_lines if k in query_ts_dict_all]
 
     map_pose_dict = {k: v for k, v in map_poses}
     query_pose_dict = {k: v for k, v in query_poses}
@@ -550,14 +784,15 @@ def _export_scene(
     _write_lines(scene_root / query_set_name / "query_names.txt", query_lines)
     _write_poses(scene_root / query_set_name / "poses.txt", [(k, query_pose_dict[k]) for k in query_lines if k in query_pose_dict])
     _write_lines(scene_root / query_set_name / "timestamps.txt", [query_ts_dict[k] for k in query_lines if k in query_ts_dict])
-    if dataset_type == "equirect" and sampling_manifest is not None:
-        _write_json(scene_root / query_set_name / "query_sequences.json", sequences)
+    _write_json(scene_root / query_set_name / "query_sequences.json", sequences)
 
     manifest = {
         "dataset_type": dataset_type,
         "scene": scene,
         "scene_runs": sorted(scene_runs),
         "split_mode": "floor_global",
+        "timestamp_unit": "us",
+        "timestamp_format": "int_microseconds",
         "single_pose_policy": single_pose_policy if dataset_type == "single" else "cam0_proxy",
         "stitch": {
             "rotate_cam0_180": bool(rotate_cam0_180),
@@ -570,6 +805,10 @@ def _export_scene(
         "counts": {
             "map_images": len(map_lines),
             "query_images": len(query_lines),
+        },
+        "map_sampling": {
+            "map_sample_dt_s": float(map_sample_dt_s),
+            "map_max_per_run": int(map_max_per_run),
         },
     }
     if manifest.get("stitch") is None:
@@ -584,11 +823,35 @@ def _export_scene(
 
 def main() -> None:
     root = _workspace_root()
-    default_hilti_root = root / "src" / "capture" / "Hilti"
-    default_dataset_root = root / "src" / "code" / "retrieval-evaluation" / "datasets"
-    default_calib_yaml = root / "src" / "resources" / "hilti-trimble-slam-challenge-2026" / "config" / "hilti_openvins" / "kalibr_imucam_chain.yaml"
-    default_mask0 = root / "src" / "resources" / "hilti-trimble-slam-challenge-2026" / "config" / "hilti_openvins" / "mask_cam0.png"
-    default_mask1 = root / "src" / "resources" / "hilti-trimble-slam-challenge-2026" / "config" / "hilti_openvins" / "mask_cam1.png"
+    default_hilti_root = root / "experiments" / "capture" / "Hilti"
+    default_dataset_root = root / "experiments" / "datasets" / "hilti"
+    default_calib_yaml = (
+        root
+        / "experiments"
+        / "resources"
+        / "hilti-trimble-slam-challenge-2026"
+        / "config"
+        / "hilti_openvins"
+        / "kalibr_imucam_chain.yaml"
+    )
+    default_mask0 = (
+        root
+        / "experiments"
+        / "resources"
+        / "hilti-trimble-slam-challenge-2026"
+        / "config"
+        / "hilti_openvins"
+        / "mask_cam0.png"
+    )
+    default_mask1 = (
+        root
+        / "experiments"
+        / "resources"
+        / "hilti-trimble-slam-challenge-2026"
+        / "config"
+        / "hilti_openvins"
+        / "mask_cam1.png"
+    )
 
     p = argparse.ArgumentParser(description="Convert Hilti scene to retrieval-evaluation dataset format.")
     p.add_argument("--dataset-type", required=True, choices=["single", "equirect"])
@@ -602,6 +865,20 @@ def main() -> None:
     p.add_argument("--copy-images", action="store_true")
     p.add_argument("--run", action="append", default=[], help="Optional explicit runs to include. By default includes all runs in floor")
     p.add_argument("--max-frames", type=int, default=0)
+    p.add_argument("--clean-output", action="store_true", help="Delete existing <dataset>/<scene> output before writing new artifacts")
+
+    p.add_argument(
+        "--map-sample-dt-s",
+        type=float,
+        default=0.0,
+        help="Map sampling: keep frames spaced by >=dt seconds per run (0 = no sampling)",
+    )
+    p.add_argument(
+        "--map-max-per-run",
+        type=int,
+        default=0,
+        help="Map sampling: cap map frames per run after sampling (0 = no cap)",
+    )
 
     p.add_argument("--calib-yaml", default=str(default_calib_yaml))
     p.add_argument("--mask0", default=str(default_mask0))
@@ -617,6 +894,23 @@ def main() -> None:
     p.add_argument("--eq-seq-len", type=int, default=8)
     p.add_argument("--eq-stride", type=int, default=10)
     p.add_argument("--eq-min-sequences", type=int, default=30)
+    p.add_argument("--single-seq-mode", choices=["time", "frames"], default="time")
+    p.add_argument(
+        "--single-sample-dt-s",
+        type=float,
+        default=1.0,
+        help="time mode: sample one query every dt seconds (0 = keep all)",
+    )
+    p.add_argument(
+        "--single-seq-duration-s",
+        type=float,
+        default=10.0,
+        help="time mode: chunk per-run sequences by duration in seconds (0 = one sequence per run)",
+    )
+    p.add_argument("--single-seq-len", type=int, default=0, help="0 = full per-run sequences (backward compatible)")
+    p.add_argument("--single-stride", type=int, default=1)
+    p.add_argument("--single-min-sequences", type=int, default=1)
+    p.add_argument("--single-seq-window-stride", type=int, default=0, help="0 = default (seq_len//2) when seq_len>0")
     p.add_argument("--low-resource-threshold", type=int, default=120)
     args = p.parse_args()
 
@@ -656,12 +950,20 @@ def main() -> None:
         scene_runs=selected_runs,
         min_timestamp=args.min_timestamp,
         single_pose_policy=args.single_pose_policy,
+        clean_output=bool(args.clean_output),
         t_cam0_cam1=t_cam0_cam1,
         r_cam0_cam1=r_cam0_cam1,
         copy_images=args.copy_images,
         stitch_maps=stitch_maps,
         jpeg_quality=max(1, min(100, int(args.jpeg_quality))),
         max_frames=max(0, int(args.max_frames)),
+        single_seq_mode=str(args.single_seq_mode),
+        single_sample_dt_s=float(args.single_sample_dt_s),
+        single_seq_duration_s=float(args.single_seq_duration_s),
+        single_seq_len=int(args.single_seq_len),
+        single_stride=max(1, int(args.single_stride)),
+        single_min_sequences=max(1, int(args.single_min_sequences)),
+        single_seq_window_stride=int(args.single_seq_window_stride),
         eq_seq_len=max(1, int(args.eq_seq_len)),
         eq_stride=max(1, int(args.eq_stride)),
         eq_min_sequences=max(1, int(args.eq_min_sequences)),
@@ -670,6 +972,8 @@ def main() -> None:
         rotate_cam1_180=bool(args.rotate_cam1_180),
         blend_mode=str(args.blend_mode),
         roll_px=int(args.roll_px),
+        map_sample_dt_s=float(args.map_sample_dt_s),
+        map_max_per_run=max(0, int(args.map_max_per_run)),
     )
     print(json.dumps(manifest, indent=2))
 
