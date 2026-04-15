@@ -1,0 +1,9 @@
+scene: floor_1
+split_policy: temporal
+map_runs:
+  - floor_1_2025-05-05_run_1
+query_runs:
+  - floor_1_2025-05-05_run_1
+map_fraction: 0.60
+query_start_fraction: 0.70
+note: temporal split with 10 percent buffer to reduce near-duplicate leakage

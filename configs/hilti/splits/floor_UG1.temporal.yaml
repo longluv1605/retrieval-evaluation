@@ -1,0 +1,9 @@
+scene: floor_UG1
+split_policy: temporal
+map_runs:
+  - floor_UG1_2025-10-16_run_1
+query_runs:
+  - floor_UG1_2025-10-16_run_1
+map_fraction: 0.50
+query_start_fraction: 0.65
+note: temporal split with 15 percent buffer for single-run floor
