@@ -23,7 +23,7 @@ retrieval:
     tau: 0.07
 
     # Maximum expected speed (m/s) for transition constraints.
-    v_max: 3.0
+    v_max: 2.0
 
     # Epsilon to avoid divide-by-zero and stabilize transitions.
     eps: 0.25
