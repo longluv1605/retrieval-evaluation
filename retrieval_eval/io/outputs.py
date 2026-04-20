@@ -20,12 +20,12 @@ class OutputLayout:
     def run_root(self) -> Path:
         return (
             self.outputs_root
+            / self.run_id
             / self.dataset
             / self.scene
             / self.map_dir
             / self.query_set
             / self.retrieval_method
-            / self.run_id
         )
 
     @property

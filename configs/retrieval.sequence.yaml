@@ -17,16 +17,16 @@ retrieval:
     sequence_file: query_sequences.json
 
     # Number of map candidates per frame before sequence smoothing.
-    num_candidates: 50
+    num_candidates: 100
 
     # Temperature for unary logits (smaller -> sharper, more confident).
-    tau: 0.07
+    tau: 0.01
 
     # Maximum expected speed (m/s) for transition constraints.
-    v_max: 2.0
+    v_max: 3.0
 
     # Epsilon to avoid divide-by-zero and stabilize transitions.
-    eps: 0.25
+    eps: 0.1
 
     # Weight of query motion prior in [0, 1].
     # If query poses are missing, the pipeline degrades gracefully.

@@ -786,6 +786,16 @@ def _export_scene(
     _write_lines(scene_root / query_set_name / "timestamps.txt", [query_ts_dict[k] for k in query_lines if k in query_ts_dict])
     _write_json(scene_root / query_set_name / "query_sequences.json", sequences)
 
+    # For equirect, query entries are sampled from stitched map-relative paths.
+    # Keep query/images available as a link to map/images so downstream loaders
+    # that expect query/<set>/images do not fail preflight checks.
+    if dataset_type == "equirect":
+        query_images_link = scene_root / query_set_name / "images"
+        map_images_dir = scene_root / "map" / "images"
+        if map_images_dir.exists() and not query_images_link.exists():
+            query_images_link.parent.mkdir(parents=True, exist_ok=True)
+            query_images_link.symlink_to(Path("..") / "map" / "images")
+
     manifest = {
         "dataset_type": dataset_type,
         "scene": scene,
