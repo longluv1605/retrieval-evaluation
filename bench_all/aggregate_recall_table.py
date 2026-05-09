@@ -58,10 +58,18 @@ def _parse_eval(path: Path) -> Tuple[JobKey, str, Dict[str, float | None]] | Non
     )
 
     recall = data.get("recall", {})
+    top1_cdf = data.get("top1_cdf", {})
+    dist_stats = data.get("distance_stats_top1", {})
     metrics = {
         "R@1": _f(recall.get("R@1")),
         "R@5": _f(recall.get("R@5")),
         "R@10": _f(recall.get("R@10")),
+        "CDF_1m": _f(top1_cdf.get("success_leq_1m")),
+        "CDF_2m": _f(top1_cdf.get("success_leq_2m")),
+        "CDF_3m": _f(top1_cdf.get("success_leq_3m")),
+        "CDF_5m": _f(top1_cdf.get("success_leq_5m")),
+        "p90": _f(dist_stats.get("p90")),
+        "p95": _f(dist_stats.get("p95")),
     }
     return key, method, metrics
 
@@ -98,25 +106,43 @@ def _build_rows(parsed: Iterable[Tuple[JobKey, str, Dict[str, float | None]]], r
         d_r5 = None if h_r5 is None or s_r5 is None else s_r5 - h_r5
         d_r10 = None if h_r10 is None or s_r10 is None else s_r10 - h_r10
 
-        rows.append(
-            {
-                "run_id": run_id,
-                "dataset": key.dataset,
-                "scene": key.scene,
-                "map_dir": key.map_dir,
-                "query_set": key.query_set,
-                "hloc_R@1": h_r1,
-                "seqfg_R@1": s_r1,
-                "delta_R@1": d_r1,
-                "hloc_R@5": h_r5,
-                "seqfg_R@5": s_r5,
-                "delta_R@5": d_r5,
-                "hloc_R@10": h_r10,
-                "seqfg_R@10": s_r10,
-                "delta_R@10": d_r10,
-                "winner": _winner(d_r1),
-            }
-        )
+        # Top-1 CDF metrics
+        cdf_keys = ["CDF_1m", "CDF_2m", "CDF_3m", "CDF_5m"]
+        cdf_data: Dict[str, object] = {}
+        for ck in cdf_keys:
+            h_val = _f(hloc.get(ck))
+            s_val = _f(seqfg.get(ck))
+            cdf_data[f"hloc_{ck}"] = h_val
+            cdf_data[f"seqfg_{ck}"] = s_val
+            cdf_data[f"delta_{ck}"] = None if h_val is None or s_val is None else s_val - h_val
+
+        # Distance percentiles
+        for pk in ["p90", "p95"]:
+            h_val = _f(hloc.get(pk))
+            s_val = _f(seqfg.get(pk))
+            cdf_data[f"hloc_{pk}"] = h_val
+            cdf_data[f"seqfg_{pk}"] = s_val
+            cdf_data[f"delta_{pk}"] = None if h_val is None or s_val is None else s_val - h_val
+
+        row: Dict[str, object] = {
+            "run_id": run_id,
+            "dataset": key.dataset,
+            "scene": key.scene,
+            "map_dir": key.map_dir,
+            "query_set": key.query_set,
+            "hloc_R@1": h_r1,
+            "seqfg_R@1": s_r1,
+            "delta_R@1": d_r1,
+            "hloc_R@5": h_r5,
+            "seqfg_R@5": s_r5,
+            "delta_R@5": d_r5,
+            "hloc_R@10": h_r10,
+            "seqfg_R@10": s_r10,
+            "delta_R@10": d_r10,
+            "winner": _winner(d_r1),
+        }
+        row.update(cdf_data)
+        rows.append(row)
     return rows
 
 
@@ -137,32 +163,44 @@ def _write_csv(path: Path, rows: List[Dict[str, object]]) -> None:
         "hloc_R@10",
         "seqfg_R@10",
         "delta_R@10",
+        "hloc_CDF_1m",
+        "seqfg_CDF_1m",
+        "delta_CDF_1m",
+        "hloc_CDF_2m",
+        "seqfg_CDF_2m",
+        "delta_CDF_2m",
+        "hloc_CDF_3m",
+        "seqfg_CDF_3m",
+        "delta_CDF_3m",
+        "hloc_CDF_5m",
+        "seqfg_CDF_5m",
+        "delta_CDF_5m",
+        "hloc_p90",
+        "seqfg_p90",
+        "delta_p90",
+        "hloc_p95",
+        "seqfg_p95",
+        "delta_p95",
         "winner",
     ]
+    numeric_fields = [f for f in fields if f.startswith(("hloc_", "seqfg_", "delta_"))]
     with path.open("w", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=fields)
+        w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
         w.writeheader()
         for r in rows:
             out = dict(r)
-            for k in [
-                "hloc_R@1",
-                "seqfg_R@1",
-                "delta_R@1",
-                "hloc_R@5",
-                "seqfg_R@5",
-                "delta_R@5",
-                "hloc_R@10",
-                "seqfg_R@10",
-                "delta_R@10",
-            ]:
-                out[k] = "" if out[k] is None else f"{float(out[k]):.6f}"
+            for k in numeric_fields:
+                val = out.get(k)
+                out[k] = "" if val is None else f"{float(val):.6f}"
             w.writerow(out)
 
 
 def _write_md(path: Path, rows: List[Dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
-        "# Recall Comparison: hloc-megaloc vs seqfg",
+        "# Recall & CDF Comparison: hloc-megaloc vs seqfg",
+        "",
+        "## Recall@K",
         "",
         "| dataset | scene | map_dir | query_set | hloc R@1 | seqfg R@1 | ΔR@1 | hloc R@5 | seqfg R@5 | ΔR@5 | hloc R@10 | seqfg R@10 | ΔR@10 | winner |",
         "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
@@ -184,6 +222,30 @@ def _write_md(path: Path, rows: List[Dict[str, object]]) -> None:
                 s10=_fmt(_f(r["seqfg_R@10"])),
                 d10=_fmt(_f(r["delta_R@10"])),
                 winner=r["winner"],
+            )
+        )
+
+    lines += [
+        "",
+        "## Top-1 Distance CDF (Success Rate ≤ τ m)",
+        "",
+        "| dataset | scene | map_dir | query_set | hloc ≤1m | seqfg ≤1m | Δ≤1m | hloc ≤2m | seqfg ≤2m | Δ≤2m | hloc ≤3m | seqfg ≤3m | Δ≤3m | hloc ≤5m | seqfg ≤5m | Δ≤5m |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+    ]
+    for r in rows:
+        cdf_vals = []
+        for tau in ["1m", "2m", "3m", "5m"]:
+            h = _f(r.get(f"hloc_CDF_{tau}"))
+            s = _f(r.get(f"seqfg_CDF_{tau}"))
+            d = _f(r.get(f"delta_CDF_{tau}"))
+            cdf_vals.extend([_fmt(h), _fmt(s), _fmt(d)])
+        lines.append(
+            "| {dataset} | {scene} | {map_dir} | {query_set} | {vals} |".format(
+                dataset=r["dataset"],
+                scene=r["scene"],
+                map_dir=r["map_dir"],
+                query_set=r["query_set"],
+                vals=" | ".join(cdf_vals),
             )
         )
 

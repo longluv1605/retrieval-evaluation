@@ -20,6 +20,12 @@ def _percentile(values: list[float], p: float) -> float:
     return float(np.percentile(np.array(values, dtype=np.float64), p))
 
 
+def _success_rate(values: list[float], threshold: float) -> float:
+    if not values:
+        return 0.0
+    return sum(1 for v in values if v <= threshold) / len(values)
+
+
 def run_eval_distance(
     dataset_root: Path,
     outputs_root: Path,
@@ -34,6 +40,7 @@ def run_eval_distance(
 ) -> Path:
     k_values = list(config.get("k_values", [1, 5, 10, 20]))
     k_values = [int(k) for k in k_values]
+    cdf_thresholds = [float(t) for t in config.get("cdf_thresholds_m", [1.0, 2.0, 3.0, 5.0])]
 
     data_layout = DatasetLayout(
         dataset_root=dataset_root,
@@ -155,6 +162,11 @@ def run_eval_distance(
 
     recall = {f"R@{k}": (hits[k] / max(1, evaluated)) for k in k_values}
 
+    # Top-1 CDF: success rate at each distance threshold
+    top1_cdf = {}
+    for tau in cdf_thresholds:
+        top1_cdf[f"success_leq_{tau:.0f}m"] = _success_rate(top1_dist, tau)
+
     retrieval_cfg_path = out_layout.meta_dir / "retrieval_config.json"
     retrieval_cfg = {}
     if retrieval_cfg_path.exists():
@@ -177,8 +189,15 @@ def run_eval_distance(
         "distance_stats_top1": {
             "mean": float(mean(top1_dist)) if top1_dist else 0.0,
             "median": float(median(top1_dist)) if top1_dist else 0.0,
+            "p50": _percentile(top1_dist, 50.0),
+            "p75": _percentile(top1_dist, 75.0),
             "p90": _percentile(top1_dist, 90.0),
+            "p95": _percentile(top1_dist, 95.0),
+            "p99": _percentile(top1_dist, 99.0),
         },
+        "top1_cdf": top1_cdf,
+        "cdf_thresholds_m": cdf_thresholds,
+        "num_top1_samples": len(top1_dist),
         "files": {
             "pairs": "retrieval/pairs.txt",
             "per_query": "eval/per_query.jsonl",
