@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +60,7 @@ def run_retrieve(
         details={"method": retrieval_method, "run_id": run_id},
     )
 
+    retrieve_wall_t0 = time.perf_counter()
     ranked, method_used_config = PairSelection.run(
         map_images_dir=data_layout.map_images_dir,
         query_images_dir=data_layout.query_images_dir,
@@ -71,7 +73,10 @@ def run_retrieve(
     )
 
     pairs_path = out_layout.retrieval_dir / "pairs.txt"
+    write_pairs_t0 = time.perf_counter()
     write_pairs(pairs_path, ranked)
+    write_pairs_s = time.perf_counter() - write_pairs_t0
+    retrieve_command_wall_s = time.perf_counter() - retrieve_wall_t0
 
     retrieval_cfg = {
         "config_path": str(config.get("_config_path", "")),
@@ -80,6 +85,23 @@ def run_retrieve(
         "params": method_used_config,
     }
     write_json(out_layout.meta_dir / "retrieval_config.json", retrieval_cfg)
+
+    runtime_details = {
+        "scope": "retrieve_command",
+        "unit": "seconds",
+        "method": retrieval_method,
+        "run_id": run_id,
+        "num_map": len(map_names),
+        "num_query": len(query_names),
+        "pairs_write_s": write_pairs_s,
+        "retrieve_command_wall_s": retrieve_command_wall_s,
+        "pair_selection_runtime": method_used_config.get("runtime", {}),
+        "notes": [
+            "feature extraction time is reported separately and is not part of retrieval_without_extraction_s",
+            "use retrieval_without_extraction_s or retrieval_core_s for no-extraction retrieval runtime reporting",
+        ],
+    }
+    write_json(out_layout.meta_dir / "retrieval_runtime.json", runtime_details)
 
     write_stage_status(
         out_layout.meta_dir / "stage_status.json",
@@ -91,6 +113,10 @@ def run_retrieve(
             "num_map": len(map_names),
             "num_query": len(query_names),
             "pairs_path": str(pairs_path),
+            "runtime_path": str(out_layout.meta_dir / "retrieval_runtime.json"),
+            "runtime": method_used_config.get("runtime", {}),
+            "pairs_write_s": write_pairs_s,
+            "retrieve_command_wall_s": retrieve_command_wall_s,
         },
     )
 

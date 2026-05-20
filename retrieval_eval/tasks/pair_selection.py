@@ -4,6 +4,7 @@ import hashlib
 from copy import deepcopy
 from collections import OrderedDict
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -220,7 +221,11 @@ class PairSelection:
         map_cache_hit = map_h5.exists() and not overwrite
         query_cache_hit = query_h5.exists() and not overwrite
 
+        map_extraction_s = 0.0
+        query_extraction_s = 0.0
+
         if not map_cache_hit:
+            t0 = time.perf_counter()
             RetrievalFeatureExtraction.extract(
                 image_dir=map_images_dir,
                 image_list=map_names,
@@ -228,8 +233,10 @@ class PairSelection:
                 method_conf=feature_conf,
                 overwrite=overwrite,
             )
+            map_extraction_s = time.perf_counter() - t0
 
         if not query_cache_hit:
+            t0 = time.perf_counter()
             RetrievalFeatureExtraction.extract(
                 image_dir=query_images_dir,
                 image_list=query_names,
@@ -237,12 +244,19 @@ class PairSelection:
                 method_conf=feature_conf,
                 overwrite=overwrite,
             )
+            query_extraction_s = time.perf_counter() - t0
 
+        t0 = time.perf_counter()
         map_desc = _read_global_descriptors(map_h5, map_names)
         query_desc = _read_global_descriptors(query_h5, query_names)
+        descriptor_load_s = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
         sim = np.matmul(query_desc, map_desc.T)
+        similarity_search_s = time.perf_counter() - t0
 
         sequence_meta: dict[str, Any] = {}
+        t0 = time.perf_counter()
         if method_name in {"seqprob", "seqfg"}:
             map_root = map_images_dir.parent
             query_root = query_images_dir.parent
@@ -304,6 +318,11 @@ class PairSelection:
             ranked = {}
             for qi, qname in enumerate(query_names):
                 ranked[qname] = [(map_names[mi], float(sim[qi, mi])) for mi in idx[qi]]
+        ranking_s = time.perf_counter() - t0
+
+        extraction_s = map_extraction_s + query_extraction_s
+        retrieval_without_extraction_s = descriptor_load_s + similarity_search_s + ranking_s
+        retrieval_core_s = similarity_search_s + ranking_s
 
         retrieval_config = {
             "method": method_name,
@@ -317,6 +336,28 @@ class PairSelection:
                 "query_h5": str(query_h5),
                 "map_cache_hit": map_cache_hit,
                 "query_cache_hit": query_cache_hit,
+            },
+            "runtime": {
+                "scope": "retrieve_after_feature_extraction",
+                "unit": "seconds",
+                "num_map": len(map_names),
+                "num_query": len(query_names),
+                "features_precomputed": bool(map_cache_hit and query_cache_hit),
+                "valid_for_no_extraction_benchmark": bool(map_cache_hit and query_cache_hit),
+                "feature_extraction_s": extraction_s,
+                "map_feature_extraction_s": map_extraction_s,
+                "query_feature_extraction_s": query_extraction_s,
+                "descriptor_load_s": descriptor_load_s,
+                "similarity_search_s": similarity_search_s,
+                "ranking_s": ranking_s,
+                "retrieval_core_s": retrieval_core_s,
+                "retrieval_without_extraction_s": retrieval_without_extraction_s,
+                "retrieval_without_extraction_ms_per_query": (
+                    1000.0 * retrieval_without_extraction_s / len(query_names) if query_names else 0.0
+                ),
+                "retrieval_core_ms_per_query": (
+                    1000.0 * retrieval_core_s / len(query_names) if query_names else 0.0
+                ),
             },
         }
         if sequence_meta:
