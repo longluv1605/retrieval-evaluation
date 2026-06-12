@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -51,5 +52,24 @@ def get_map_names(layout: DatasetLayout) -> list[str]:
 def get_query_names(layout: DatasetLayout) -> list[str]:
     query_names = layout.query_root / "query_names.txt"
     if query_names.exists():
-        return read_image_list(query_names)
+        names = read_image_list(query_names)
+        sequence_file = layout.query_root / "query_sequences.json"
+        if sequence_file.exists():
+            payload = json.loads(sequence_file.read_text(encoding="utf-8"))
+            if isinstance(payload, list) and all(isinstance(group, list) for group in payload):
+                annotated = [
+                    name
+                    for group in payload
+                    for name in group
+                    if isinstance(name, str)
+                ]
+                annotated_set = set(annotated)
+                looks_truncated = (
+                    len(annotated) == len(annotated_set)
+                    and len(annotated) >= 2 * len(names)
+                    and set(names).issubset(annotated_set)
+                )
+                if looks_truncated:
+                    return annotated
+        return names
     return read_image_list(layout.query_root / "images.txt")

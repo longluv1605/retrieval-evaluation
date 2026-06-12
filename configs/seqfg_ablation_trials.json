@@ -1,0 +1,122 @@
+[
+  {
+    "name": "timestamp_only_main",
+    "sequence": {
+      "num_candidates": 100,
+      "tau": 0.01,
+      "v_max": 3.0,
+      "eps": 0.1,
+      "use_query_displacement": false,
+      "lambda_dist": 0.0,
+      "sigma_d": 1.0,
+      "transition_weight": 1.0,
+      "fusion": "logprob_add",
+      "fusion_weight": 0.05,
+      "max_dt_s": 30.0
+    }
+  },
+  {
+    "name": "pose_assisted_upper_bound",
+    "sequence": {
+      "num_candidates": 100,
+      "tau": 0.01,
+      "v_max": 3.0,
+      "eps": 0.1,
+      "use_query_displacement": true,
+      "lambda_dist": 1.0,
+      "sigma_d": 1.0,
+      "transition_weight": 1.0,
+      "fusion": "logprob_add",
+      "fusion_weight": 0.05,
+      "max_dt_s": 30.0
+    }
+  },
+  {
+    "name": "legacy_prob_add",
+    "sequence": {
+      "num_candidates": 100,
+      "tau": 0.01,
+      "v_max": 3.0,
+      "eps": 0.1,
+      "use_query_displacement": true,
+      "lambda_dist": 1.0,
+      "sigma_d": 1.0,
+      "transition_weight": 1.0,
+      "fusion": "prob_add",
+      "fusion_weight": 1.0,
+      "max_dt_s": 30.0
+    }
+  },
+  {
+    "name": "unary_only",
+    "sequence": {
+      "num_candidates": 100,
+      "tau": 0.01,
+      "v_max": 3.0,
+      "eps": 0.1,
+      "use_query_displacement": false,
+      "lambda_dist": 0.0,
+      "sigma_d": 1.0,
+      "transition_weight": 0.0,
+      "fusion": "logprob_add",
+      "fusion_weight": 0.05,
+      "max_dt_s": 30.0
+    }
+  },
+  {
+    "name": "k50",
+    "sequence": {
+      "num_candidates": 50,
+      "use_query_displacement": false,
+      "lambda_dist": 0.0
+    }
+  },
+  {
+    "name": "k200",
+    "sequence": {
+      "num_candidates": 200,
+      "use_query_displacement": false,
+      "lambda_dist": 0.0
+    }
+  },
+  {
+    "name": "tau_0p02",
+    "sequence": {
+      "tau": 0.02,
+      "use_query_displacement": false,
+      "lambda_dist": 0.0
+    }
+  },
+  {
+    "name": "vmax_1",
+    "sequence": {
+      "v_max": 1.0,
+      "use_query_displacement": false,
+      "lambda_dist": 0.0
+    }
+  },
+  {
+    "name": "vmax_5",
+    "sequence": {
+      "v_max": 5.0,
+      "use_query_displacement": false,
+      "lambda_dist": 0.0
+    }
+  },
+  {
+    "name": "beta_0p5",
+    "sequence": {
+      "transition_weight": 0.5,
+      "use_query_displacement": false,
+      "lambda_dist": 0.0
+    }
+  },
+  {
+    "name": "beta_2",
+    "sequence": {
+      "transition_weight": 2.0,
+      "use_query_displacement": false,
+      "lambda_dist": 0.0
+    }
+  }
+]

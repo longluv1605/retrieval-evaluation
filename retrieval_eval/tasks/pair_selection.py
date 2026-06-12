@@ -12,7 +12,7 @@ import h5py
 import numpy as np
 
 from retrieval_eval.io.poses import load_positions
-from retrieval_eval.methods.sequence_prob import sequence_probabilistic_rank
+from retrieval_eval.methods.sequence_prob import sequence_probabilistic_rank, temporal_smooth_rank
 
 from .feature_extraction import RetrievalFeatureExtraction
 
@@ -72,11 +72,15 @@ class PairSelection:
             "name": "seqfg",
             "sequence": True,
         },
+        "temporal-smooth": {
+            "name": "temporal-smooth",
+            "sequence": True,
+        },
     }
 
     @staticmethod
     def _resolve_feature(method_name: str, method_cfg: dict[str, Any]) -> dict[str, Any]:
-        if method_name in {"seqprob", "seqfg"}:
+        if method_name in {"seqprob", "seqfg", "temporal-smooth"}:
             global_model = str(method_cfg.get("global_model", "megaloc"))
             if global_model not in RetrievalFeatureExtraction.methods:
                 supported = ", ".join(sorted(RetrievalFeatureExtraction.methods))
@@ -257,22 +261,9 @@ class PairSelection:
 
         sequence_meta: dict[str, Any] = {}
         t0 = time.perf_counter()
-        if method_name in {"seqprob", "seqfg"}:
+        if method_name in {"seqprob", "seqfg", "temporal-smooth"}:
             map_root = map_images_dir.parent
             query_root = query_images_dir.parent
-            map_positions = load_positions(map_root / "poses.txt")
-            if not map_positions:
-                raise FileNotFoundError(
-                    f"Sequence method requires map poses, but none were loaded from: {map_root / 'poses.txt'}"
-                )
-            missing_map_pose = [name for name in map_names if name not in map_positions]
-            if missing_map_pose:
-                preview = ", ".join(missing_map_pose[:5])
-                raise ValueError(
-                    "Sequence method requires map poses for all map images. "
-                    f"Missing {len(missing_map_pose)} poses (examples: {preview})"
-                )
-            query_positions = load_positions(query_root / "poses.txt")
             sequence_cfg = dict(method_cfg.get("sequence", {}))
             groups, grouping_meta = PairSelection._build_sequence_groups(
                 query_root=query_root,
@@ -282,19 +273,46 @@ class PairSelection:
 
             ranked = {}
             sequence_summaries: list[dict[str, Any]] = []
+
+            map_positions = {}
+            query_positions = {}
+            if method_name in {"seqprob", "seqfg"}:
+                map_positions = load_positions(map_root / "poses.txt")
+                if not map_positions:
+                    raise FileNotFoundError(
+                        f"Sequence method requires map poses, but none were loaded from: {map_root / 'poses.txt'}"
+                    )
+                missing_map_pose = [name for name in map_names if name not in map_positions]
+                if missing_map_pose:
+                    preview = ", ".join(missing_map_pose[:5])
+                    raise ValueError(
+                        "Sequence method requires map poses for all map images. "
+                        f"Missing {len(missing_map_pose)} poses (examples: {preview})"
+                    )
+                query_positions = load_positions(query_root / "poses.txt")
+
             for sid, idxs in groups.items():
                 idx_arr = np.array(idxs, dtype=np.int64)
                 qnames_seq = [query_names[i] for i in idxs]
-                ranked_seq, meta_seq = sequence_probabilistic_rank(
-                    sim=sim[idx_arr, :],
-                    map_names=map_names,
-                    query_names=qnames_seq,
-                    map_positions=map_positions,
-                    query_positions=query_positions,
-                    query_root=query_root,
-                    sequence_cfg=sequence_cfg,
-                    top_k=top_k,
-                )
+                if method_name == "temporal-smooth":
+                    ranked_seq, meta_seq = temporal_smooth_rank(
+                        sim=sim[idx_arr, :],
+                        map_names=map_names,
+                        query_names=qnames_seq,
+                        sequence_cfg=sequence_cfg,
+                        top_k=top_k,
+                    )
+                else:
+                    ranked_seq, meta_seq = sequence_probabilistic_rank(
+                        sim=sim[idx_arr, :],
+                        map_names=map_names,
+                        query_names=qnames_seq,
+                        map_positions=map_positions,
+                        query_positions=query_positions,
+                        query_root=query_root,
+                        sequence_cfg=sequence_cfg,
+                        top_k=top_k,
+                    )
                 for qname in qnames_seq:
                     ranked[qname] = ranked_seq[qname]
 

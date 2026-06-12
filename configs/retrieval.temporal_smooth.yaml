@@ -1,0 +1,8 @@
+retrieval:
+  global_model: megaloc
+  top_k: 10
+  overwrite_features: false
+  sequence:
+    sequence_file: query_sequences.json
+    smooth_window_radius: 2
+    smooth_weight: 1.0

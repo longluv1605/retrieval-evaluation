@@ -28,12 +28,26 @@ retrieval:
     # Epsilon to avoid divide-by-zero and stabilize transitions.
     eps: 0.1
 
-    # Weight of query motion prior in [0, 1].
-    # If query poses are missing, the pipeline degrades gracefully.
-    lambda_dist: 1.0
+    # Disable query displacement for the main image-only/timestamp-only setting.
+    # Evaluation still uses query poses to score distances, but retrieval does not.
+    use_query_displacement: false
+
+    # Weight of query motion prior in [0, 1]. Effective only when
+    # use_query_displacement is true and query poses/odometry are available.
+    lambda_dist: 0.0
 
     # Gaussian width for motion-distance mismatch.
     sigma_d: 1.0
+
+    # Pairwise transition strength beta.
+    transition_weight: 1.0
+
+    # Fusion for final reranking:
+    # - prob_add: old behavior, score = similarity + w * P(x_i)
+    # - logprob_add: calibrated paper setting, score = similarity + w * log P(x_i)
+    # - prob_only/logprob_only: ablations
+    fusion: logprob_add
+    fusion_weight: 0.05
 
     # Upper bound for delta-time between consecutive frames (seconds).
     max_dt_s: 30.0

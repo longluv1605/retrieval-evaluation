@@ -1,0 +1,56 @@
+[
+  {
+    "name": "unary_only",
+    "sequence": {
+      "transition_weight": 0.0
+    }
+  },
+  {
+    "name": "k50",
+    "sequence": {
+      "num_candidates": 50
+    }
+  },
+  {
+    "name": "k200",
+    "sequence": {
+      "num_candidates": 200
+    }
+  },
+  {
+    "name": "tau_0p005",
+    "sequence": {
+      "tau": 0.005
+    }
+  },
+  {
+    "name": "tau_0p02",
+    "sequence": {
+      "tau": 0.02
+    }
+  },
+  {
+    "name": "vmax_1",
+    "sequence": {
+      "v_max": 1.0
+    }
+  },
+  {
+    "name": "vmax_5",
+    "sequence": {
+      "v_max": 5.0
+    }
+  },
+  {
+    "name": "beta_0p5",
+    "sequence": {
+      "transition_weight": 0.5
+    }
+  },
+  {
+    "name": "beta_2",
+    "sequence": {
+      "transition_weight": 2.0
+    }
+  }
+]

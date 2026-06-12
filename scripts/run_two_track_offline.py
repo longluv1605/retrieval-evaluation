@@ -50,6 +50,7 @@ def _deep_merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
 
 
 def _apply_trial_override(base_cfg: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    override = {k: v for k, v in override.items() if k != "name"}
     if "retrieval" in override:
         return _deep_merge(base_cfg, override)
 
@@ -192,6 +193,7 @@ def main() -> None:
     print(f"[2/3] Running segfg/seqfg tuning trials: {len(trial_overrides)}")
     trials_report: list[dict[str, Any]] = []
     for idx, override in enumerate(trial_overrides, start=1):
+        trial_name = str(override.get("name", f"trial_{idx:03d}"))
         trial_cfg = _apply_trial_override(segfg_base_cfg, override)
         trial_run_id = f"segfg_tuned_{tag}_{idx:03d}"
         _, trial_eval_path = run(
@@ -219,6 +221,7 @@ def main() -> None:
         trials_report.append(
             {
                 "trial_index": idx,
+                "trial_name": trial_name,
                 "run_id": trial_run_id,
                 "override": override,
                 "metrics": {"R@1": r1, "R@5": r5, "R@10": r10},

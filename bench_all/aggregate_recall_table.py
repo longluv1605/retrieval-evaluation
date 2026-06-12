@@ -16,6 +16,7 @@ from typing import Dict, Iterable, List, Tuple
 
 
 METHOD_HLOC = "hloc-megaloc"
+METHOD_TEMPORAL = "temporal-smooth"
 METHOD_SEQFG = "seqfg"
 
 
@@ -47,7 +48,7 @@ def _collect_eval_paths(run_root: Path) -> List[Path]:
 def _parse_eval(path: Path) -> Tuple[JobKey, str, Dict[str, float | None]] | None:
     data = json.loads(path.read_text(encoding="utf-8"))
     method = str(data.get("retrieval_method", ""))
-    if method not in {METHOD_HLOC, METHOD_SEQFG}:
+    if method not in {METHOD_HLOC, METHOD_TEMPORAL, METHOD_SEQFG}:
         return None
 
     key = JobKey(
@@ -93,15 +94,22 @@ def _build_rows(parsed: Iterable[Tuple[JobKey, str, Dict[str, float | None]]], r
     for key in sorted(grouped.keys(), key=lambda k: (k.dataset, k.scene, k.map_dir, k.query_set)):
         methods = grouped[key]
         hloc = methods.get(METHOD_HLOC, {})
+        temporal = methods.get(METHOD_TEMPORAL, {})
         seqfg = methods.get(METHOD_SEQFG, {})
 
         h_r1 = _f(hloc.get("R@1"))
         h_r5 = _f(hloc.get("R@5"))
         h_r10 = _f(hloc.get("R@10"))
+        t_r1 = _f(temporal.get("R@1"))
+        t_r5 = _f(temporal.get("R@5"))
+        t_r10 = _f(temporal.get("R@10"))
         s_r1 = _f(seqfg.get("R@1"))
         s_r5 = _f(seqfg.get("R@5"))
         s_r10 = _f(seqfg.get("R@10"))
 
+        dt_r1 = None if h_r1 is None or t_r1 is None else t_r1 - h_r1
+        dt_r5 = None if h_r5 is None or t_r5 is None else t_r5 - h_r5
+        dt_r10 = None if h_r10 is None or t_r10 is None else t_r10 - h_r10
         d_r1 = None if h_r1 is None or s_r1 is None else s_r1 - h_r1
         d_r5 = None if h_r5 is None or s_r5 is None else s_r5 - h_r5
         d_r10 = None if h_r10 is None or s_r10 is None else s_r10 - h_r10
@@ -131,12 +139,18 @@ def _build_rows(parsed: Iterable[Tuple[JobKey, str, Dict[str, float | None]]], r
             "map_dir": key.map_dir,
             "query_set": key.query_set,
             "hloc_R@1": h_r1,
+            "temporal_R@1": t_r1,
+            "delta_temporal_R@1": dt_r1,
             "seqfg_R@1": s_r1,
             "delta_R@1": d_r1,
             "hloc_R@5": h_r5,
+            "temporal_R@5": t_r5,
+            "delta_temporal_R@5": dt_r5,
             "seqfg_R@5": s_r5,
             "delta_R@5": d_r5,
             "hloc_R@10": h_r10,
+            "temporal_R@10": t_r10,
+            "delta_temporal_R@10": dt_r10,
             "seqfg_R@10": s_r10,
             "delta_R@10": d_r10,
             "winner": _winner(d_r1),
@@ -155,12 +169,18 @@ def _write_csv(path: Path, rows: List[Dict[str, object]]) -> None:
         "map_dir",
         "query_set",
         "hloc_R@1",
+        "temporal_R@1",
+        "delta_temporal_R@1",
         "seqfg_R@1",
         "delta_R@1",
         "hloc_R@5",
+        "temporal_R@5",
+        "delta_temporal_R@5",
         "seqfg_R@5",
         "delta_R@5",
         "hloc_R@10",
+        "temporal_R@10",
+        "delta_temporal_R@10",
         "seqfg_R@10",
         "delta_R@10",
         "hloc_CDF_1m",
@@ -183,7 +203,7 @@ def _write_csv(path: Path, rows: List[Dict[str, object]]) -> None:
         "delta_p95",
         "winner",
     ]
-    numeric_fields = [f for f in fields if f.startswith(("hloc_", "seqfg_", "delta_"))]
+    numeric_fields = [f for f in fields if f.startswith(("hloc_", "temporal_", "seqfg_", "delta_"))]
     with path.open("w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
         w.writeheader()
@@ -198,27 +218,33 @@ def _write_csv(path: Path, rows: List[Dict[str, object]]) -> None:
 def _write_md(path: Path, rows: List[Dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
-        "# Recall & CDF Comparison: hloc-megaloc vs seqfg",
+        "# Recall & CDF Comparison: hloc-megaloc vs temporal-smooth vs seqfg",
         "",
         "## Recall@K",
         "",
-        "| dataset | scene | map_dir | query_set | hloc R@1 | seqfg R@1 | ΔR@1 | hloc R@5 | seqfg R@5 | ΔR@5 | hloc R@10 | seqfg R@10 | ΔR@10 | winner |",
-        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+        "| dataset | scene | map_dir | query_set | hloc R@1 | temporal R@1 | Δtemp R@1 | seqfg R@1 | Δseqfg R@1 | hloc R@5 | temporal R@5 | Δtemp R@5 | seqfg R@5 | Δseqfg R@5 | hloc R@10 | temporal R@10 | Δtemp R@10 | seqfg R@10 | Δseqfg R@10 | winner |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for r in rows:
         lines.append(
-            "| {dataset} | {scene} | {map_dir} | {query_set} | {h1} | {s1} | {d1} | {h5} | {s5} | {d5} | {h10} | {s10} | {d10} | {winner} |".format(
+            "| {dataset} | {scene} | {map_dir} | {query_set} | {h1} | {t1} | {dt1} | {s1} | {d1} | {h5} | {t5} | {dt5} | {s5} | {d5} | {h10} | {t10} | {dt10} | {s10} | {d10} | {winner} |".format(
                 dataset=r["dataset"],
                 scene=r["scene"],
                 map_dir=r["map_dir"],
                 query_set=r["query_set"],
                 h1=_fmt(_f(r["hloc_R@1"])),
+                t1=_fmt(_f(r["temporal_R@1"])),
+                dt1=_fmt(_f(r["delta_temporal_R@1"])),
                 s1=_fmt(_f(r["seqfg_R@1"])),
                 d1=_fmt(_f(r["delta_R@1"])),
                 h5=_fmt(_f(r["hloc_R@5"])),
+                t5=_fmt(_f(r["temporal_R@5"])),
+                dt5=_fmt(_f(r["delta_temporal_R@5"])),
                 s5=_fmt(_f(r["seqfg_R@5"])),
                 d5=_fmt(_f(r["delta_R@5"])),
                 h10=_fmt(_f(r["hloc_R@10"])),
+                t10=_fmt(_f(r["temporal_R@10"])),
+                dt10=_fmt(_f(r["delta_temporal_R@10"])),
                 s10=_fmt(_f(r["seqfg_R@10"])),
                 d10=_fmt(_f(r["delta_R@10"])),
                 winner=r["winner"],
@@ -278,7 +304,7 @@ def main() -> None:
             parsed.append(row)
 
     if not parsed:
-        raise SystemExit("[ERROR] no hloc-megaloc/seqfg evaluation rows found")
+        raise SystemExit("[ERROR] no supported evaluation rows found")
 
     rows = _build_rows(parsed, args.run_id)
     _write_csv(args.out_csv, rows)

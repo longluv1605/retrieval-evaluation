@@ -1,0 +1,19 @@
+retrieval:
+  global_model: megaloc
+  top_k: 10
+  overwrite_features: false
+  sequence:
+    sequence_file: query_sequences.json
+    num_candidates: 100
+    tau: 0.01
+    v_max: 3.0
+    eps: 0.1
+    use_query_displacement: false
+    lambda_dist: 0.0
+    sigma_d: 1.0
+    transition_weight: 1.0
+    fusion: prob_add
+    fusion_weight: 1.0
+    max_dt_s: 30.0
+    timestamp_unit: us
+    dt_s_default: 10.0

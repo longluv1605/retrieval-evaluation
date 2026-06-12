@@ -105,6 +105,50 @@ def _candidate_indices(sim: np.ndarray, num_candidates: int) -> tuple[np.ndarray
     return idx, cand_scores
 
 
+def temporal_smooth_rank(
+    sim: np.ndarray,
+    map_names: list[str],
+    query_names: list[str],
+    sequence_cfg: dict[str, Any],
+    top_k: int,
+) -> tuple[dict[str, list[tuple[str, float]]], dict[str, Any]]:
+    """Rank map images after temporal moving-average smoothing of similarity rows."""
+    if sim.ndim != 2:
+        raise ValueError(f"sim must be 2D, got shape={sim.shape}")
+
+    q_count, map_count = sim.shape
+    if q_count != len(query_names):
+        raise ValueError("sim/query_names size mismatch")
+    if map_count != len(map_names):
+        raise ValueError("sim/map_names size mismatch")
+
+    window_radius = max(0, int(sequence_cfg.get("smooth_window_radius", 2)))
+    blend_weight = float(sequence_cfg.get("smooth_weight", 1.0))
+    blend_weight = float(np.clip(blend_weight, 0.0, 1.0))
+
+    smoothed = np.empty_like(sim, dtype=np.float64)
+    sim64 = sim.astype(np.float64, copy=False)
+    for i in range(q_count):
+        lo = max(0, i - window_radius)
+        hi = min(q_count, i + window_radius + 1)
+        smoothed[i] = np.mean(sim64[lo:hi], axis=0)
+
+    final_scores = (1.0 - blend_weight) * sim64 + blend_weight * smoothed
+    k_eff = min(max(1, int(top_k)), map_count)
+    rank_idx = np.argsort(-final_scores, axis=1)[:, :k_eff]
+
+    ranked: dict[str, list[tuple[str, float]]] = {}
+    for qi, qname in enumerate(query_names):
+        ranked[qname] = [(map_names[int(mi)], float(final_scores[qi, mi])) for mi in rank_idx[qi]]
+
+    return ranked, {
+        "smooth_window_radius": window_radius,
+        "smooth_weight": blend_weight,
+        "num_queries": q_count,
+        "num_map": map_count,
+    }
+
+
 def _candidate_positions(
     cand_idx: np.ndarray,
     map_names: list[str],
@@ -145,6 +189,7 @@ def _build_transition_log_probs(
     eps = max(float(cfg["eps"]), 1e-9)
     sigma_d = max(float(cfg["sigma_d"]), eps)
     lambda_dist = max(float(cfg["lambda_dist"]), 0.0)
+    transition_weight = max(float(cfg.get("transition_weight", 1.0)), 0.0)
     max_dt_s = max(float(cfg["max_dt_s"]), eps)
 
     for i in range(1, q_count):
@@ -176,11 +221,35 @@ def _build_transition_log_probs(
             over = np.maximum(map_dist - v_max * dt, 0.0)
             transition -= (over / sigma) ** 2
 
+        transition *= transition_weight
+
         valid = prev_ok[:, None] & cur_ok[None, :]
         transition[~valid] = 0.0
         out[i - 1] = transition
 
     return out
+
+
+def _fuse_sequence_scores(
+    cand_scores: np.ndarray,
+    post_prob: np.ndarray,
+    log_gamma: np.ndarray,
+    cfg: dict[str, Any],
+) -> np.ndarray:
+    fusion = str(cfg.get("fusion", "prob_add")).strip().lower()
+    weight = float(cfg.get("fusion_weight", 1.0))
+
+    if fusion == "prob_add":
+        return cand_scores + weight * post_prob
+    if fusion == "logprob_add":
+        return cand_scores + weight * log_gamma
+    if fusion == "prob_only":
+        return post_prob
+    if fusion == "logprob_only":
+        return log_gamma
+
+    allowed = "logprob_add, logprob_only, prob_add, prob_only"
+    raise ValueError(f"Invalid retrieval.sequence.fusion={fusion!r}. Allowed values: {allowed}")
 
 
 def sequence_probabilistic_rank(
@@ -202,8 +271,12 @@ def sequence_probabilistic_rank(
         "tau": float(sequence_cfg.get("tau", 0.07)),
         "v_max": float(sequence_cfg.get("v_max", 3.0)),
         "eps": float(sequence_cfg.get("eps", 0.25)),
+        "use_query_displacement": bool(sequence_cfg.get("use_query_displacement", True)),
         "lambda_dist": float(sequence_cfg.get("lambda_dist", 1.0)),
         "sigma_d": float(sequence_cfg.get("sigma_d", 1.0)),
+        "transition_weight": max(float(sequence_cfg.get("transition_weight", 1.0)), 0.0),
+        "fusion": str(sequence_cfg.get("fusion", "prob_add")),
+        "fusion_weight": float(sequence_cfg.get("fusion_weight", 1.0)),
         "max_dt_s": float(sequence_cfg.get("max_dt_s", 30.0)),
         "timestamp_unit": str(sequence_cfg.get("timestamp_unit", "us")),
         "dt_s_default": float(sequence_cfg.get("dt_s_default", 10.0)),
@@ -228,7 +301,10 @@ def sequence_probabilistic_rank(
     log_emission -= _logsumexp(log_emission, axis=1)[:, None]
 
     cand_pos = _candidate_positions(cand_idx=cand_idx, map_names=map_names, map_positions=map_positions)
-    query_step_d = _query_step_distances(query_names=query_names, query_positions=query_positions)
+    if seq_cfg["use_query_displacement"]:
+        query_step_d = _query_step_distances(query_names=query_names, query_positions=query_positions)
+    else:
+        query_step_d = np.full(q_count, np.nan, dtype=np.float64)
 
     if q_count <= 1:
         log_gamma = log_emission
@@ -259,7 +335,12 @@ def sequence_probabilistic_rank(
     # Keep dense output for compatibility with existing pairs.txt writer.
     seq_scores = sim.astype(np.float64, copy=True)
     rows = np.arange(q_count)[:, None]
-    seq_scores[rows, cand_idx] = cand_scores + post_prob
+    seq_scores[rows, cand_idx] = _fuse_sequence_scores(
+        cand_scores=cand_scores,
+        post_prob=post_prob,
+        log_gamma=log_gamma,
+        cfg=seq_cfg,
+    )
 
     k_eff = min(max(1, int(top_k)), map_count)
     rank_idx = np.argsort(-seq_scores, axis=1)[:, :k_eff]
@@ -276,7 +357,10 @@ def sequence_probabilistic_rank(
         "num_query_with_pose": int(used_query_poses),
         "num_map_with_pose": int(used_map_poses),
     }
-    if used_query_poses == 0:
+    if not seq_cfg["use_query_displacement"]:
+        meta["lambda_dist_effective"] = 0.0
+        meta["sequence_note"] = "query displacement disabled; motion prior uses timestamps and v_max only"
+    elif used_query_poses == 0:
         meta["lambda_dist_effective"] = 0.0
         meta["sequence_note"] = "query poses missing, motion prior uses v_max only"
     else:

@@ -160,6 +160,7 @@ Supported retrieval methods:
 - `hloc-dir`
 - `seqprob`
 - `seqfg`
+- `temporal-smooth`
 
 Example:
 ```text
@@ -213,8 +214,12 @@ retrieval:
     tau: 0.07
     v_max: 3.0
     eps: 0.25
+    use_query_displacement: false
     lambda_dist: 1.0
     sigma_d: 1.0
+    transition_weight: 1.0
+    fusion: logprob_add
+    fusion_weight: 0.05
     max_dt_s: 30.0
     timestamp_unit: us
     dt_s_default: 10.0
@@ -225,6 +230,46 @@ Rules:
 - If missing/invalid, a uniform fallback timeline is used.
 - If `query_*/query_sequences.txt` or `query_*/query_sequences.json` exists, optimization runs per sequence group.
 - Unannotated query images are processed as singleton sequences.
+- Set `use_query_displacement: false` for timestamp-only retrieval. This is the recommended main setting when query poses are ground-truth labels used only for evaluation.
+- Set `use_query_displacement: true` with `lambda_dist > 0` only for odometry-assisted experiments or upper-bound analysis.
+- `transition_weight` is the pairwise strength beta in the factor graph.
+- `fusion: logprob_add` uses `similarity + fusion_weight * log posterior`; `fusion: prob_add` reproduces the older `similarity + posterior` behavior.
+
+### 9.1 Sequential Baselines and Analysis
+
+`temporal-smooth` is a lightweight sequential baseline that averages global descriptor scores inside each sequence group. It uses:
+
+```yaml
+retrieval:
+  global_model: megaloc
+  top_k: 10
+  sequence:
+    sequence_file: query_sequences.json
+    smooth_window_radius: 2
+    smooth_weight: 1.0
+```
+
+Useful config files:
+- `configs/retrieval.sequence.yaml`: timestamp-only SeqFG main setting.
+- `configs/retrieval.sequence.pose_assisted.yaml`: query-displacement/odometry-assisted setting.
+- `configs/retrieval.sequence.legacy.yaml`: older `similarity + posterior` behavior.
+- `configs/retrieval.temporal_smooth.yaml`: moving-average sequential baseline.
+- `configs/retrieval.hloc.top100.yaml` and `configs/eval.top100.yaml`: top-100 baseline run for oracle candidate-pool analysis.
+
+Analyze promotions, losses, and oracle candidate-pool recall:
+
+```bash
+python3 tools/analyze_rerank_effects.py \
+  --outputs-root ../outputs2 \
+  --run-id <RUN_ID> \
+  --baseline-method hloc-megaloc \
+  --sequence-method seqfg \
+  --oracle-k 100 \
+  --out-json ../outputs2/<RUN_ID>/rerank_effects.json \
+  --out-csv ../outputs2/<RUN_ID>/rerank_effects.csv
+```
+
+For oracle@100, the baseline run must write at least 100 retrieved pairs per query.
 
 ## 10) Environment Setup
 ```bash

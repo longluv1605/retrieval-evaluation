@@ -19,15 +19,17 @@ AGGREGATE_SCRIPT="${AGGREGATE_SCRIPT:-$SCRIPT_DIR/aggregate_recall_table.py}"
 
 SEQFG_CONFIG="${SEQFG_CONFIG:-$REPO_DIR/configs/retrieval.sequence.yaml}"
 BASE_HLOC_CONFIG="${BASE_HLOC_CONFIG:-$REPO_DIR/configs/retrieval.hloc.yaml}"
+TEMPORAL_CONFIG="${TEMPORAL_CONFIG:-$REPO_DIR/configs/retrieval.temporal_smooth.yaml}"
 EVAL_CONFIG="${EVAL_CONFIG:-$REPO_DIR/configs/eval.yaml}"
+RUN_METHODS="${RUN_METHODS:-hloc-megaloc temporal-smooth seqfg}"
 
 CONDA_ENV="${CONDA_ENV:-vnu-ar}"
 RUN_ID_PREFIX="${RUN_ID_PREFIX:-fullbench}"
-THRESHOLD_M="${THRESHOLD_M:-5.0}"
+THRESHOLD_M="${THRESHOLD_M:-1.0}"
 DRY_RUN="${DRY_RUN:-0}"
 
-# Generate global run_id once for the entire benchmark session.
-GLOBAL_RUN_ID="${RUN_ID_PREFIX}_$(date +%Y%m%d_%H%M%S)_$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+# Generate global run_id once for the entire benchmark session unless provided.
+GLOBAL_RUN_ID="${GLOBAL_RUN_ID:-${RUN_ID_PREFIX}_$(date +%Y%m%d_%H%M%S)_$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 
 log() {
   echo "[$(date +'%F %T')] $*"
@@ -68,11 +70,13 @@ require_file "$MATRIX_SCRIPT"
 require_file "$AGGREGATE_SCRIPT"
 require_file "$SEQFG_CONFIG"
 require_file "$BASE_HLOC_CONFIG"
+require_file "$TEMPORAL_CONFIG"
 require_file "$EVAL_CONFIG"
 require_dir "$DATASET_ROOT"
 
 SEQFG_CONFIG_REL="$(to_repo_rel "$SEQFG_CONFIG")"
 BASE_HLOC_CONFIG_REL="$(to_repo_rel "$BASE_HLOC_CONFIG")"
+TEMPORAL_CONFIG_REL="$(to_repo_rel "$TEMPORAL_CONFIG")"
 EVAL_CONFIG_REL="$(to_repo_rel "$EVAL_CONFIG")"
 
 log "Generating dataset summary from filesystem..."
@@ -86,6 +90,7 @@ JOB_LINES="$(python3 "$MATRIX_SCRIPT" --summary "$SUMMARY_JSON")"
 
 TOTAL_JOBS=$(printf '%s\n' "$JOB_LINES" | wc -l | tr -d ' ')
 log "Jobs: $TOTAL_JOBS, SeqFG config: $SEQFG_CONFIG"
+log "Run methods: $RUN_METHODS"
 log "Global run_id: $GLOBAL_RUN_ID"
 
 run_one() {
@@ -113,7 +118,9 @@ run_one() {
     GLOBAL_RUN_ID="$GLOBAL_RUN_ID" \
     RETRIEVAL_CONFIG_HLOC="$BASE_HLOC_CONFIG_REL" \
     RETRIEVAL_CONFIG_SEQFG="$SEQFG_CONFIG_REL" \
+    RETRIEVAL_CONFIG_TEMPORAL="$TEMPORAL_CONFIG_REL" \
     EVAL_CONFIG="$EVAL_CONFIG_REL" \
+    RUN_METHODS="$RUN_METHODS" \
     bash "$BENCH_SERVER"
   )
 }
