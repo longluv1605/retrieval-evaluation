@@ -1,4 +1,4 @@
-# Retrieval Evaluation
+ # Retrieval Evaluation
 
 This repository standardizes image retrieval benchmarking with a clear two-stage flow:
 1. Run retrieval and generate `pairs.txt`.
@@ -359,3 +359,30 @@ A run is valid when:
 - `eval/per_query.jsonl` exists for per-query debugging.
 - `eval/pairs_scored.csv` exists for analysis.
 - `meta/stage_status.json` exists for reproducibility.
+
+## 13) End-to-End Localization Benchmark
+
+The ICARCV paper can also run a fixed-backend map-based localization check:
+MegaLoc or SeqFG-Time produces top-10 references, then the LaMAR/CroCoDL
+benchmark code runs SuperPoint, LightGlue, and PnP/RANSAC.
+
+Expected capture-format data roots:
+- LaMAR: `experiments/capture/lamar/HGE`
+- CroCoDL: `experiments/capture/crocodl/ARCHE_D2`
+
+Run the selected matrix:
+```bash
+python3 scripts/run_localization_benchmark.py \
+  --outputs-root ../../outputs_localization
+```
+
+The script writes:
+- `../../outputs_localization/localization_summary.json`
+- `../../outputs_localization/localization_summary.csv`
+
+If CroCoDL capture data is missing, ARCHE_D2 Spot jobs are skipped and marked
+as skipped; HGE jobs can still run. Rebuild the ICARCV generated tables after
+the benchmark:
+```bash
+python3 ../../ICARCV2026/paper/scripts/build_paper_results.py
+```
