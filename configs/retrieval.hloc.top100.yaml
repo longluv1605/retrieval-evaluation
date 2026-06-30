@@ -1,0 +1,5 @@
+retrieval:
+  global_model: megaloc
+  resize_max: 640
+  top_k: 100
+  overwrite_features: false

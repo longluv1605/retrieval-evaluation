@@ -1,0 +1,60 @@
+retrieval:
+  # Global descriptor backbone used by seqprob/seqfg.
+  # Supported: netvlad | megaloc | dir
+  global_model: megaloc
+
+  # Number of map candidates written to pairs.txt per query (top-K output).
+  top_k: 10
+
+  # Recompute descriptors even when feature files already exist.
+  overwrite_features: false
+
+  sequence:
+    # Optional sequence annotation file under query root.
+    # Supported formats:
+    # - .txt: image_name sequence_id
+    # - .json: list of lists (each inner list is one sequence)
+    sequence_file: query_sequences.json
+
+    # Number of map candidates per frame before sequence smoothing.
+    num_candidates: 100
+
+    # Temperature for unary logits (smaller -> sharper, more confident).
+    tau: 0.01
+
+    # Maximum expected speed (m/s) for transition constraints.
+    v_max: 3.0
+
+    # Epsilon to avoid divide-by-zero and stabilize transitions.
+    eps: 0.1
+
+    # Disable query displacement for the main image-only/timestamp-only setting.
+    # Evaluation still uses query poses to score distances, but retrieval does not.
+    use_query_displacement: false
+
+    # Weight of query motion prior in [0, 1]. Effective only when
+    # use_query_displacement is true and query poses/odometry are available.
+    lambda_dist: 0.0
+
+    # Gaussian width for motion-distance mismatch.
+    sigma_d: 1.0
+
+    # Pairwise transition strength beta.
+    transition_weight: 1.0
+
+    # Fusion for final reranking:
+    # - prob_add: old behavior, score = similarity + w * P(x_i)
+    # - logprob_add: calibrated paper setting, score = similarity + w * log P(x_i)
+    # - prob_only/logprob_only: ablations
+    fusion: logprob_add
+    fusion_weight: 0.05
+
+    # Upper bound for delta-time between consecutive frames (seconds).
+    max_dt_s: 30.0
+
+    # Timestamp unit in query/timestamps.txt: s | ms | us | ns.
+    # Default for LaMAR/Capture is usually us.
+    timestamp_unit: us
+
+    # Fallback when timestamps.txt is missing/invalid: uniform timeline with dt_s_default seconds per frame.
+    dt_s_default: 10.0

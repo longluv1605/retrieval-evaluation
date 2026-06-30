@@ -1,0 +1,8 @@
+scene: floor_2
+split_policy: inter-run
+map_runs:
+  - floor_2_2025-05-05_run_1
+query_runs:
+  - floor_2_2025-10-28_run_1
+  - floor_2_2025-10-28_run_2
+note: inter-run split for stronger generalization and lower leakage
