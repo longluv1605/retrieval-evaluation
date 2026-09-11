@@ -19,7 +19,7 @@ MAP_DIR="${MAP_DIR:-map}"
 QUERY_SETS="${QUERY_SETS:-query_val_phone}"
 OUTPUTS_ROOT="${OUTPUTS_ROOT:-../outputs}"
 RUN_ID="${RUN_ID:-exp_001}"
-RETRIEVAL_METHOD="${RETRIEVAL_METHOD:-seqprob}"
+RETRIEVAL_METHOD="${RETRIEVAL_METHOD:-seqfg}"
 THRESHOLD_M="${THRESHOLD_M:-10.0}"
 
 RETRIEVAL_CONFIG="${RETRIEVAL_CONFIG:-configs/retrieval.sequence.yaml}"

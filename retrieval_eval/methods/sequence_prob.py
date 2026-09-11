@@ -215,8 +215,13 @@ def _build_transition_log_probs(
             ) * float(query_step_d[i])
 
         sigma = max(sigma_d * dt, eps)
+        # Two-part pairwise potential, eq. (psi) in the paper. T_i = -beta * psi.
+        # (a) two-sided: pulls map displacement toward the expected displacement.
         transition = -0.5 * ((map_dist - expected_dist) / sigma) ** 2
 
+        # (b) one-sided speed limit: a hinge that is identically zero whenever the
+        # displacement is reachable at v_max, active only beyond it. Slow or
+        # stationary motion is never penalized by this term.
         if v_max > 0:
             over = np.maximum(map_dist - v_max * dt, 0.0)
             transition -= (over / sigma) ** 2
@@ -266,13 +271,16 @@ def sequence_probabilistic_rank(
     if sim.ndim != 2:
         raise ValueError(f"sim must be 2D, got shape={sim.shape}")
 
+    # Fallbacks are the published SeqFG-Time setting (ICARCV 2026, Table I), so a
+    # config that omits a key runs the paper method rather than silently diverging.
+    # Mirrors configs/retrieval.sequence.yaml.
     seq_cfg = {
-        "num_candidates": int(sequence_cfg.get("num_candidates", 50)),
-        "tau": float(sequence_cfg.get("tau", 0.07)),
+        "num_candidates": int(sequence_cfg.get("num_candidates", 100)),
+        "tau": float(sequence_cfg.get("tau", 0.01)),
         "v_max": float(sequence_cfg.get("v_max", 3.0)),
-        "eps": float(sequence_cfg.get("eps", 0.25)),
-        "use_query_displacement": bool(sequence_cfg.get("use_query_displacement", True)),
-        "lambda_dist": float(sequence_cfg.get("lambda_dist", 1.0)),
+        "eps": float(sequence_cfg.get("eps", 0.1)),
+        "use_query_displacement": bool(sequence_cfg.get("use_query_displacement", False)),
+        "lambda_dist": float(sequence_cfg.get("lambda_dist", 0.0)),
         "sigma_d": float(sequence_cfg.get("sigma_d", 1.0)),
         "transition_weight": max(float(sequence_cfg.get("transition_weight", 1.0)), 0.0),
         "fusion": str(sequence_cfg.get("fusion", "prob_add")),

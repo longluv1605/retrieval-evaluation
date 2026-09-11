@@ -1,3 +1,6 @@
+# FROZEN PROVENANCE - do not edit.
+# Exact config behind the published Proxy runs (fullbench5m_legacy_repro_*).
+# For new work use configs/retrieval.sequence.pose_assisted.yaml, value-identical.
 retrieval:
   global_model: megaloc
   top_k: 10

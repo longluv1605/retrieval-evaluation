@@ -1,3 +1,10 @@
+# Assisted ablation "Proxy" (lambda_d = 1.0), ICARCV 2026 Table II.
+#
+# Motion scale comes entirely from adjacent query displacement. In the paper
+# this magnitude is derived from ground-truth query poses, NOT measured VIO;
+# it is an idealized proxy and an upper bound on real odometry. Effects of
+# scale error, drift, and synchronization error are untested.
+# Content matches configs/retrieval.sequence.legacy.yaml (frozen provenance).
 retrieval:
   global_model: megaloc
   top_k: 10
@@ -12,8 +19,8 @@ retrieval:
     lambda_dist: 1.0
     sigma_d: 1.0
     transition_weight: 1.0
-    fusion: logprob_add
-    fusion_weight: 0.05
+    fusion: prob_add
+    fusion_weight: 1.0
     max_dt_s: 30.0
     timestamp_unit: us
     dt_s_default: 10.0

@@ -1,9 +1,14 @@
+# SeqFG-Time: the published, deployable setting (ICARCV 2026, Table I).
+#
+# Pose-free: consumes query timestamps and reference-map camera centers only.
+# Identical in content to configs/retrieval.sequence.legacy_timestamp.yaml,
+# which is kept frozen as the provenance record of the published run IDs.
 retrieval:
   # Global descriptor backbone used by seqprob/seqfg.
   # Supported: netvlad | megaloc | dir
   global_model: megaloc
 
-  # Number of map candidates written to pairs.txt per query (top-K output).
+  # Number of map candidates written to pairs.txt per query (K_out in the paper).
   top_k: 10
 
   # Recompute descriptors even when feature files already exist.
@@ -16,38 +21,45 @@ retrieval:
     # - .json: list of lists (each inner list is one sequence)
     sequence_file: query_sequences.json
 
-    # Number of map candidates per frame before sequence smoothing.
+    # Candidate pool per frame before sequence inference (K in the paper).
     num_candidates: 100
 
     # Temperature for unary logits (smaller -> sharper, more confident).
     tau: 0.01
 
-    # Maximum expected speed (m/s) for transition constraints.
+    # Speed bound (m/s) for the transition term. Acts as an order-of-magnitude
+    # plausibility limit, not a motion model; shared across all devices.
     v_max: 3.0
 
     # Epsilon to avoid divide-by-zero and stabilize transitions.
     eps: 0.1
 
-    # Disable query displacement for the main image-only/timestamp-only setting.
+    # Disable query displacement for the main timestamp-only setting.
     # Evaluation still uses query poses to score distances, but retrieval does not.
     use_query_displacement: false
 
-    # Weight of query motion prior in [0, 1]. Effective only when
-    # use_query_displacement is true and query poses/odometry are available.
+    # Weight of query motion prior in [0, 1] (lambda_d in the paper). Effective
+    # only when use_query_displacement is true and query displacement is available.
     lambda_dist: 0.0
 
-    # Gaussian width for motion-distance mismatch.
+    # Gaussian width for motion-distance mismatch (sigma_d, m/s).
     sigma_d: 1.0
 
-    # Pairwise transition strength beta.
+    # Pairwise transition strength (beta in the paper).
     transition_weight: 1.0
 
     # Fusion for final reranking:
-    # - prob_add: old behavior, score = similarity + w * P(x_i)
-    # - logprob_add: calibrated paper setting, score = similarity + w * log P(x_i)
-    # - prob_only/logprob_only: ablations
-    fusion: logprob_add
-    fusion_weight: 0.05
+    # - prob_add: published setting, score = similarity + alpha * P(x_i).
+    #   Both terms are O(1) and dimensionless (cosine in [-1,1], probability in
+    #   [0,1]), so alpha = 1 needs no per-dataset calibration.
+    # - logprob_add: score = similarity + w * log P(x_i). Not the published
+    #   setting; log P is unbounded below and needs a hand-tuned w.
+    #   See configs/retrieval.sequence.logprob_calibrated.yaml.
+    # - prob_only/logprob_only: ablations.
+    fusion: prob_add
+
+    # alpha in the paper.
+    fusion_weight: 1.0
 
     # Upper bound for delta-time between consecutive frames (seconds).
     max_dt_s: 30.0

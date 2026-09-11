@@ -1,3 +1,7 @@
+# FROZEN PROVENANCE - do not edit.
+# Exact config behind the published SeqFG-Time runs
+# (fullbench5m_legacy_timestamp_repro_*, paper_ablation_* base).
+# For new work use configs/retrieval.sequence.yaml, which is value-identical.
 retrieval:
   global_model: megaloc
   top_k: 10
