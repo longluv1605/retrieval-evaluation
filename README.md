@@ -250,11 +250,45 @@ retrieval:
 ```
 
 Useful config files:
-- `configs/retrieval.sequence.yaml`: timestamp-only SeqFG main setting.
-- `configs/retrieval.sequence.pose_assisted.yaml`: query-displacement/odometry-assisted setting.
-- `configs/retrieval.sequence.legacy.yaml`: older `similarity + posterior` behavior.
-- `configs/retrieval.temporal_smooth.yaml`: moving-average sequential baseline.
+- `configs/retrieval.sequence.yaml`: **SeqFG-Time, the published setting.** Pose-free;
+  uses query timestamps and reference-map camera centers only.
+- `configs/retrieval.sequence.blend.yaml`: assisted ablation, `lambda_d = 0.5`.
+- `configs/retrieval.sequence.pose_assisted.yaml`: assisted ablation, `lambda_d = 1.0`.
+- `configs/retrieval.temporal_smooth.yaml`: moving-average sequential baseline
+  (centered 5-frame window, uniform weights, full row replacement).
 - `configs/retrieval.hloc.top100.yaml` and `configs/eval.top100.yaml`: top-100 baseline run for oracle candidate-pool analysis.
+- `configs/retrieval.sequence.logprob_calibrated.yaml`: log-posterior fusion variant.
+  **Not the published setting** — see the note below.
+- `configs/retrieval.sequence.legacy*.yaml`: frozen copies of the exact configs behind
+  the published run IDs. Value-identical to the three configs above; kept unedited for
+  provenance. Use the named configs for new work.
+
+### Reproducing the published numbers
+
+The paper ranks candidates by `s_i(j) = S_ij + alpha * P_i(k)` with `alpha = 1`, where
+`P_i(k)` is a marginal probability in `[0, 1]` and `S_ij` an L2-normalized cosine
+similarity in `[-1, 1]`. Both terms are `O(1)` and dimensionless, which is why `alpha = 1`
+needs no per-dataset calibration. This is `fusion: prob_add` with `fusion_weight: 1.0`.
+
+`fusion: logprob_add` fuses `log P` instead, which is unbounded below and therefore needs
+a small hand-tuned weight. It is a different method and does **not** reproduce the paper.
+
+Published hyperparameters (one setting for every reported result, fixed a priori, no
+per-scene or per-device tuning): `K = 100`, `K_out = 10`, `tau = 0.01`, `v_max = 3 m/s`,
+`alpha = beta = 1`, `sigma_d = 1 m/s`, `eps = 0.1`, `dt_max = 30 s`.
+
+| Paper row | Config | Published run ID |
+|---|---|---|
+| Independent (hloc+MegaLoc) | `configs/retrieval.hloc.yaml` | `fullbench5m_legacy_repro_*` |
+| Temporal smoothing | `configs/retrieval.temporal_smooth.yaml` | `fullbench5m_temporal_repro_*` |
+| SeqFG-Time (main) | `configs/retrieval.sequence.yaml` | `fullbench5m_legacy_timestamp_repro_*` |
+| SeqFG Blend (`lambda_d = 0.5`) | `configs/retrieval.sequence.blend.yaml` | `fullbench5m_legacy_blended_repro_*` |
+| SeqFG Proxy (`lambda_d = 1.0`) | `configs/retrieval.sequence.pose_assisted.yaml` | `fullbench5m_legacy_repro_*` |
+| Sensitivity / unary-only | `scripts/run_paper_ablation.py` | `paper_ablation_*` |
+
+The assisted ablations derive adjacent displacement from ground-truth query poses as an
+idealized motion proxy, not from measured VIO. Each run records its resolved
+hyperparameters under `meta/retrieval_config.json` -> `params.sequence.resolved_params`.
 
 Analyze promotions, losses, and oracle candidate-pool recall:
 
