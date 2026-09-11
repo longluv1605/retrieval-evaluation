@@ -16,6 +16,24 @@ from retrieval_eval.methods.sequence_prob import sequence_probabilistic_rank, te
 
 from .feature_extraction import RetrievalFeatureExtraction
 
+# Sequence-method meta keys that describe one sequence rather than the run-wide
+# configuration; excluded from the recorded resolved_params.
+_PER_SEQUENCE_META_KEYS = frozenset(
+    {
+        "timestamp_source",
+        "timestamp_fallback_reason",
+        "timestamp_missing_keys",
+        "timestamp_parse_errors",
+        "num_candidates_effective",
+        "num_query_with_pose",
+        "num_map_with_pose",
+        "num_queries",
+        "num_map",
+        "sequence_note",
+        "lambda_dist_effective",
+    }
+)
+
 
 def _read_global_descriptors(feature_h5: Path, names: list[str]) -> np.ndarray:
     desc = []
@@ -273,6 +291,7 @@ class PairSelection:
 
             ranked = {}
             sequence_summaries: list[dict[str, Any]] = []
+            resolved_params: dict[str, Any] | None = None
 
             map_positions = {}
             query_positions = {}
@@ -323,10 +342,18 @@ class PairSelection:
                         "timestamp_source": meta_seq.get("timestamp_source", "unknown"),
                     }
                 )
+                # Resolved hyperparameters are identical across sequences within a
+                # run; keep the first so each run records the method it actually
+                # used instead of only the config file name.
+                if resolved_params is None:
+                    resolved_params = {
+                        k: v for k, v in meta_seq.items() if k not in _PER_SEQUENCE_META_KEYS
+                    }
 
             sequence_meta = {
                 **grouping_meta,
                 "num_sequences_effective": len(groups),
+                "resolved_params": resolved_params or {},
                 "sequence_summaries": sequence_summaries,
             }
         else:
